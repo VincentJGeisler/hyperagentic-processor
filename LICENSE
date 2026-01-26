@@ -1,0 +1,37 @@
+Hyperagentic Processor - Restricted Research License
+
+Copyright (c) 2026 Vince Geisler
+
+RESEARCH AND EDUCATIONAL USE ONLY
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to use
+the Software solely for non-commercial research and educational purposes,
+subject to the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+2. The Software may not be used for commercial purposes without explicit
+   written permission from the copyright holder.
+
+3. The Software may not be deployed in production environments.
+
+4. Any modifications or derivative works must be clearly marked as such and
+   may not be distributed without explicit written permission.
+
+5. Publications or presentations using this Software must cite the original
+   work and author.
+
+6. Users acknowledge that this Software generates and executes code
+   autonomously and agree to use it only in properly isolated environments.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+For commercial licensing inquiries, contact: vgeisler@uvic.ca

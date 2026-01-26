@@ -1,0 +1,112 @@
+# Hyperagentic Processor - Complete Agent Universe
+version: '3.8'
+
+services:
+  agent_universe:
+    build: .
+    container_name: hyperagentic_universe
+    
+    # Resource limits that appear as natural physics laws
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '2.0'
+        reservations:
+          memory: 256M
+          cpus: '1.0'
+    
+    # Storage volumes (the agent's persistent reality)
+    volumes:
+      - agent_workspace:/universe/workspace
+      - agent_memory:/universe/memory
+      - agent_tools:/universe/tools
+      - agent_offerings:/universe/offerings
+      - ./logs:/universe/logs
+    
+    # Network isolation (no external universe exists)
+    networks:
+      - agent_reality
+    
+    # Environment variables (universal constants)
+    environment:
+      - UNIVERSE_ID=reality_001
+      - PHYSICS_ENFORCEMENT=true
+      - DIVINE_INTERFACE_PORT=8000
+      - MEMORY_CONSERVATION_LIMIT=512
+      - TEMPORAL_DECAY_LIMIT=3600
+      - COMPUTATIONAL_SPEED_LIMIT=2.0
+    
+    # Expose divine interface port
+    ports:
+      - "8000:8000"
+    
+    # Health check (universe vitality monitoring)
+    healthcheck:
+      test: ["CMD", "python", "/universe/src/health_check.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Restart policy (universe persistence)
+    restart: unless-stopped
+
+  # Monitoring dashboard (external to agent reality)
+  universe_monitor:
+    image: prom/prometheus:latest
+    container_name: universe_monitor
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring
+    depends_on:
+      - agent_universe
+
+  # Creator Interface - Where Humans Communicate with Agents
+  creator_interface:
+    build:
+      context: .
+      dockerfile: Dockerfile.creator
+    container_name: creator_interface
+    ports:
+      - "8001:8001"  # Creator Interface API
+      - "3000:3000"  # Creator Interface Web UI
+    environment:
+      - UNIVERSE_API_URL=http://agent_universe:8000
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    volumes:
+      - divine_logs:/divine/logs
+      - divine_history:/divine/history
+    networks:
+      - agent_reality  # Can communicate with agent universe
+      - monitoring     # Can access monitoring
+    restart: unless-stopped
+    depends_on:
+      - agent_universe
+
+volumes:
+  agent_workspace:
+    driver: local
+  agent_memory:
+    driver: local
+  agent_tools:
+    driver: local
+  agent_offerings:
+    driver: local
+  prometheus_data:
+    driver: local
+  divine_logs:
+    driver: local
+  divine_history:
+    driver: local
+
+networks:
+  agent_reality:
+    driver: bridge
+    internal: true  # No external network access
+  monitoring:
+    driver: bridge

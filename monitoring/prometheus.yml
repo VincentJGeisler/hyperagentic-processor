@@ -1,0 +1,42 @@
+# Prometheus configuration for monitoring the Agent Universe
+# This runs OUTSIDE the agent reality - they cannot see this monitoring
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # Monitor the agent universe container
+  - job_name: 'agent-universe'
+    static_configs:
+      - targets: ['agent_universe:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    
+  # Monitor universe physics
+  - job_name: 'universe-physics'
+    static_configs:
+      - targets: ['agent_universe:8001']
+    metrics_path: '/physics/metrics'
+    scrape_interval: 5s
+    
+  # Monitor divine interface
+  - job_name: 'divine-interface'
+    static_configs:
+      - targets: ['agent_universe:8000']
+    metrics_path: '/divine/metrics'
+    scrape_interval: 30s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+# Alert rules for universe monitoring
+rule_files:
+  - "universe_alerts.yml"

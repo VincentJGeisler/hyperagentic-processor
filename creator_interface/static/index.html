@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Creator Interface - Hyperagentic Processor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
+            color: #00ff88;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            padding: 30px 0;
+            border-bottom: 2px solid #00ff88;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            font-size: 2.5em;
+            text-shadow: 0 0 20px #00ff88;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #888;
+            font-size: 1.1em;
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .panel {
+            background: rgba(0, 255, 136, 0.05);
+            border: 1px solid #00ff88;
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        .panel-title {
+            font-size: 1.3em;
+            margin-bottom: 15px;
+            color: #00ff88;
+            text-transform: uppercase;
+        }
+
+        .divine-message-area {
+            grid-column: 1 / -1;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 120px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid #00ff88;
+            color: #00ff88;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 1em;
+            border-radius: 4px;
+            resize: vertical;
+        }
+
+        textarea:focus {
+            outline: none;
+            box-shadow: 0 0 10px #00ff88;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+            align-items: center;
+        }
+
+        button {
+            background: #00ff88;
+            color: #0a0a0a;
+            border: none;
+            padding: 12px 30px;
+            font-family: 'Courier New', monospace;
+            font-size: 1em;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.3s;
+        }
+
+        button:hover {
+            background: #00cc6a;
+            box-shadow: 0 0 20px #00ff88;
+        }
+
+        button:disabled {
+            background: #333;
+            color: #666;
+            cursor: not-allowed;
+        }
+
+        .priority-slider {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        input[type="range"] {
+            flex: 1;
+            height: 4px;
+            background: rgba(0, 255, 136, 0.3);
+            outline: none;
+            border-radius: 2px;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #00ff88;
+            cursor: pointer;
+            border-radius: 50%;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-online {
+            background: #00ff88;
+            box-shadow: 0 0 10px #00ff88;
+        }
+
+        .status-offline {
+            background: #ff0044;
+            box-shadow: 0 0 10px #ff0044;
+        }
+
+        .agent-card {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(0, 255, 136, 0.3);
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+        }
+
+        .agent-name {
+            font-weight: bold;
+            color: #00ff88;
+            margin-bottom: 8px;
+        }
+
+        .agent-stat {
+            display: flex;
+            justify-content: space-between;
+            margin: 5px 0;
+            font-size: 0.9em;
+        }
+
+        .stat-label {
+            color: #888;
+        }
+
+        .stat-value {
+            color: #00ff88;
+        }
+
+        .response-log {
+            max-height: 400px;
+            overflow-y: auto;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        .response-entry {
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid rgba(0, 255, 136, 0.2);
+        }
+
+        .response-entry:last-child {
+            border-bottom: none;
+        }
+
+        .response-timestamp {
+            color: #666;
+            font-size: 0.85em;
+            margin-bottom: 5px;
+        }
+
+        .response-message {
+            color: #00ff88;
+            margin-bottom: 10px;
+        }
+
+        .response-result {
+            color: #888;
+            font-size: 0.9em;
+            white-space: pre-wrap;
+        }
+
+        .loading {
+            display: inline-block;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.3);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #00ff88;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>⚡ CREATOR INTERFACE ⚡</h1>
+            <p class="subtitle">Divine Communication Layer for Hyperagentic Processor</p>
+            <p class="subtitle">
+                <span class="status-indicator" id="connectionStatus"></span>
+                <span id="connectionText">Connecting to universe...</span>
+            </p>
+        </header>
+
+        <div class="main-grid">
+            <!-- Divine Message Input -->
+            <div class="panel divine-message-area">
+                <div class="panel-title">📜 Send Divine Message</div>
+                <textarea id="divineMessage" placeholder="Enter your divine message to the agents...
+
+Examples:
+- Create a sentiment analysis tool that understands human emotions
+- Analyze the security of a web authentication system
+- Build a tool that can optimize database queries
+- Explain the nature of consciousness and your purpose"></textarea>
+                <div class="controls">
+                    <button id="sendButton" onclick="sendDivineMessage()">Send Divine Message</button>
+                    <div class="priority-slider">
+                        <span>Priority:</span>
+                        <input type="range" id="priority" min="1" max="10" value="5">
+                        <span id="priorityValue">5</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Universe Status -->
+            <div class="panel">
+                <div class="panel-title">🌌 Universe Status</div>
+                <div id="universeStatus">
+                    <div class="agent-stat">
+                        <span class="stat-label">Universe ID:</span>
+                        <span class="stat-value" id="universeId">-</span>
+                    </div>
+                    <div class="agent-stat">
+                        <span class="stat-label">Uptime:</span>
+                        <span class="stat-value" id="uptime">-</span>
+                    </div>
+                    <div class="agent-stat">
+                        <span class="stat-label">Active Tasks:</span>
+                        <span class="stat-value" id="activeTasks">-</span>
+                    </div>
+                    <div class="agent-stat">
+                        <span class="stat-label">Completed Tasks:</span>
+                        <span class="stat-value" id="completedTasks">-</span>
+                    </div>
+                    <div class="agent-stat">
+                        <span class="stat-label">Agent Satisfaction:</span>
+                        <span class="stat-value" id="agentSatisfaction">-</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Agent Status -->
+            <div class="panel">
+                <div class="panel-title">🤖 Agent Collective</div>
+                <div id="agentStatus">
+                    <p class="stat-label">Loading agent status...</p>
+                </div>
+            </div>
+
+            <!-- Response Log -->
+            <div class="panel divine-message-area">
+                <div class="panel-title">📊 Divine Communication Log</div>
+                <div class="response-log" id="responseLog">
+                    <p class="stat-label">No divine messages sent yet. The agents await your command...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let isConnected = false;
+
+        // Update priority display
+        document.getElementById('priority').addEventListener('input', (e) => {
+            document.getElementById('priorityValue').textContent = e.target.value;
+        });
+
+        // Connect to WebSocket
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.hostname}:8001/ws`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                isConnected = true;
+                updateConnectionStatus(true);
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                console.log('Received:', data);
+                
+                if (data.type === 'divine_response') {
+                    addResponseToLog(data.data);
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                updateConnectionStatus(false);
+            };
+            
+            ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                isConnected = false;
+                updateConnectionStatus(false);
+                // Reconnect after 5 seconds
+                setTimeout(connectWebSocket, 5000);
+            };
+        }
+
+        function updateConnectionStatus(connected) {
+            const indicator = document.getElementById('connectionStatus');
+            const text = document.getElementById('connectionText');
+            
+            if (connected) {
+                indicator.className = 'status-indicator status-online';
+                text.textContent = 'Connected to universe';
+            } else {
+                indicator.className = 'status-indicator status-offline';
+                text.textContent = 'Disconnected - Reconnecting...';
+            }
+        }
+
+        async function sendDivineMessage() {
+            const message = document.getElementById('divineMessage').value.trim();
+            const priority = parseInt(document.getElementById('priority').value);
+            
+            if (!message) {
+                alert('Please enter a divine message');
+                return;
+            }
+            
+            const button = document.getElementById('sendButton');
+            button.disabled = true;
+            button.textContent = 'Sending...';
+            
+            try {
+                const response = await fetch('/divine/message', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        priority: priority
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                addResponseToLog(data);
+                
+                // Clear message
+                document.getElementById('divineMessage').value = '';
+                
+            } catch (error) {
+                console.error('Error sending divine message:', error);
+                alert(`Failed to send divine message: ${error.message}`);
+            } finally {
+                button.disabled = false;
+                button.textContent = 'Send Divine Message';
+            }
+        }
+
+        function addResponseToLog(data) {
+            const log = document.getElementById('responseLog');
+            
+            // Clear "no messages" text
+            if (log.querySelector('.stat-label')) {
+                log.innerHTML = '';
+            }
+            
+            const entry = document.createElement('div');
+            entry.className = 'response-entry';
+            
+            const timestamp = new Date(data.timestamp).toLocaleString();
+            const message = data.divine_message || data.message || 'Unknown message';
+            const result = JSON.stringify(data.agent_responses || data, null, 2);
+            
+            entry.innerHTML = `
+                <div class="response-timestamp">${timestamp} - ${data.message_id}</div>
+                <div class="response-message">Divine Message: ${message}</div>
+                <div class="response-result">${result}</div>
+            `;
+            
+            log.insertBefore(entry, log.firstChild);
+            
+            // Refresh status
+            refreshStatus();
+        }
+
+        async function refreshStatus() {
+            try {
+                // Get universe status
+                const universeResponse = await fetch('/universe/status');
+                if (universeResponse.ok) {
+                    const universeData = await universeResponse.json();
+                    updateUniverseStatus(universeData);
+                }
+                
+                // Get agent status
+                const agentResponse = await fetch('/agents/status');
+                if (agentResponse.ok) {
+                    const agentData = await agentResponse.json();
+                    updateAgentStatus(agentData);
+                }
+            } catch (error) {
+                console.error('Error refreshing status:', error);
+            }
+        }
+
+        function updateUniverseStatus(data) {
+            document.getElementById('universeId').textContent = data.universe_id || '-';
+            document.getElementById('uptime').textContent = 
+                data.uptime_seconds ? `${Math.floor(data.uptime_seconds / 60)}m` : '-';
+            document.getElementById('activeTasks').textContent = data.active_tasks || '0';
+            document.getElementById('completedTasks').textContent = data.completed_tasks || '0';
+            document.getElementById('agentSatisfaction').textContent = 
+                data.system_metrics?.agent_satisfaction ? 
+                data.system_metrics.agent_satisfaction.toFixed(2) : '-';
+        }
+
+        function updateAgentStatus(agents) {
+            const container = document.getElementById('agentStatus');
+            container.innerHTML = '';
+            
+            for (const [name, status] of Object.entries(agents)) {
+                const card = document.createElement('div');
+                card.className = 'agent-card';
+                
+                const motivation = status.motivation_summary?.overall_motivation || 0;
+                const emotion = status.motivation_summary?.current_emotion?.state || 'unknown';
+                
+                card.innerHTML = `
+                    <div class="agent-name">${name}</div>
+                    <div class="agent-stat">
+                        <span class="stat-label">Motivation:</span>
+                        <span class="stat-value">${motivation.toFixed(2)}</span>
+                    </div>
+                    <div class="agent-stat">
+                        <span class="stat-label">Emotion:</span>
+                        <span class="stat-value">${emotion}</span>
+                    </div>
+                    <div class="agent-stat">
+                        <span class="stat-label">Tasks:</span>
+                        <span class="stat-value">${status.performance_metrics?.tasks_completed || 0}</span>
+                    </div>
+                `;
+                
+                container.appendChild(card);
+            }
+        }
+
+        // Initialize
+        connectWebSocket();
+        refreshStatus();
+        
+        // Refresh status every 30 seconds
+        setInterval(refreshStatus, 30000);
+        
+        // Allow Enter to send (with Shift+Enter for new line)
+        document.getElementById('divineMessage').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendDivineMessage();
+            }
+        });
+    </script>
+</body>
+</html>

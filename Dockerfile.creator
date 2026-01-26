@@ -1,0 +1,27 @@
+# Creator Interface - The Divine Communication Layer
+# This is where humans (creators) interact with the agent universe
+FROM python:3.11-slim
+
+WORKDIR /divine
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir fastapi uvicorn websockets aiofiles
+
+# Copy Creator Interface application
+COPY creator_interface/ ./creator_interface/
+
+# Create directories
+RUN mkdir -p /divine/logs /divine/history
+
+# Expose ports
+EXPOSE 8001 3000
+
+# Run the Creator Interface
+CMD ["python", "creator_interface/main.py"]
