@@ -32,6 +32,7 @@ from grading_agent import create_grading_agent
 from evolutionary_pressure import evolutionary_pressure, update_evolutionary_pressure
 from universe_physics import universe_physics, check_natural_laws
 from agent_drive_system import DriveType
+from agent_registry import AgentRegistry
 
 # Import LLM configuration
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'config'))
@@ -63,6 +64,9 @@ class HyperagenticOrchestrator:
         # Initialize core systems
         self.divine_interface = DivineInterface()
         
+        # Initialize Agent Registry
+        self.agent_registry = AgentRegistry()
+        
         # LLM Configuration - Using Groq like the original class example
         self.llm_config = get_llm_config()
         
@@ -74,6 +78,9 @@ class HyperagenticOrchestrator:
         
         # Create motivated agents
         self.agents = self._initialize_agents()
+        
+        # Register agents with their capabilities
+        self._register_agents_with_registry()
         
         # Create agent group for collaboration
         self.agent_group = create_motivated_agent_group(self.llm_config)
@@ -101,8 +108,20 @@ class HyperagenticOrchestrator:
         agents["grading_agent"] = create_grading_agent(self.llm_config)
         
         # Create Oracle agent with reference to SafetyAgent
-        from oracle_agent import create_oracle_agent
+        from oracle_agent import create_oracle_agent, OracleAgent, KnowledgeSource
         agents["oracle"] = create_oracle_agent(self.llm_config, agents["safety_agent"])
+        
+        # Set orchestrator reference in Oracle agent
+        agents["oracle"].set_orchestrator(self)
+        
+        # FIX: Initialize Oracle's async components (web search manager with api_key_available fix)
+        # This must be done to populate api_key_available dynamically
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(agents["oracle"].initialize())
+        loop.close()
+        logger.info("✅ FIX: Oracle agent async initialization completed")
         
         # TODO: Add more agent types as we implement them
         # agents["memory_keeper"] = MotivatedAgentFactory.create_memory_keeper_agent(self.llm_config)
@@ -111,6 +130,81 @@ class HyperagenticOrchestrator:
         
         logger.info(f"Initialized {len(agents)} motivated agents with functional capabilities")
         return agents
+    
+    def _register_agents_with_registry(self):
+        """Register all agents with the agent registry system"""
+        logger.info("Registering agents with capability registry")
+        
+        # Register Oracle Agent
+        self.agent_registry.register_agent(
+            name="oracle",
+            capabilities=[
+                "external_knowledge",
+                "web_search",
+                "mcp_discovery",
+                "mcp_generation"
+            ],
+            description="Gateway to external knowledge - searches web, discovers/installs/generates MCP servers",
+            agent_instance=self.agents["oracle"],
+            metadata={
+                "type": "knowledge_agent",
+                "primary_function": "external_information_access"
+            }
+        )
+        
+        # Register Tool Creator Agent
+        self.agent_registry.register_agent(
+            name="tool_creator",
+            capabilities=[
+                "code_generation",
+                "tool_creation",
+                "text_synthesis"
+            ],
+            description="Creates functional Python tools and synthesizes text responses",
+            agent_instance=self.agents["tool_creator"],
+            metadata={
+                "type": "creator_agent",
+                "primary_function": "tool_generation"
+            }
+        )
+        
+        # Register Safety Agent
+        self.agent_registry.register_agent(
+            name="safety_agent",
+            capabilities=[
+                "security_analysis",
+                "code_validation",
+                "threat_detection"
+            ],
+            description="Analyzes code security and validates safety of generated tools",
+            agent_instance=self.agents["safety_agent"],
+            metadata={
+                "type": "guardian_agent",
+                "primary_function": "security_enforcement"
+            }
+        )
+        
+        # Register Grading Agent
+        self.agent_registry.register_agent(
+            name="grading_agent",
+            capabilities=[
+                "performance_evaluation",
+                "quality_assessment",
+                "metrics_analysis"
+            ],
+            description="Evaluates tool performance and provides quality assessments",
+            agent_instance=self.agents["grading_agent"],
+            metadata={
+                "type": "evaluator_agent",
+                "primary_function": "performance_measurement"
+            }
+        )
+        
+        logger.info(f"Registered {len(self.agents)} agents with {len(self.agent_registry.get_all_capabilities())} capability mappings")
+        
+        # Log capability distribution
+        for agent_name, capabilities in self.agent_registry.get_all_capabilities().items():
+            logger.info(f"  - {agent_name}: {capabilities}")
     
     async def process_divine_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -170,28 +264,191 @@ class HyperagenticOrchestrator:
             "completion_time": datetime.now().isoformat()
         }
     
+    def select_primary_agent(self, task: str) -> str:
+        """
+        Intelligently select the primary agent for a task using LLM analysis.
+        
+        Args:
+            task: The task description
+            
+        Returns:
+            Name of the primary agent best suited for the task
+        """
+        logger.info(f"Selecting primary agent for task: {task[:100]}...")
+        
+        # Get all registered agents and their capabilities
+        agent_info = self.agent_registry.list_all_agents()
+        agent_descriptions = []
+        
+        for agent in agent_info:
+            agent_descriptions.append(
+                f"- {agent['name']}: {agent['description']} "
+                f"(Capabilities: {', '.join(agent['capabilities'])})"
+            )
+        
+        agents_info_str = "\n".join(agent_descriptions)
+        
+        # Create prompt for LLM to analyze task and select best agent
+        prompt = f"""You are an intelligent task router for an agentic system. Your job is to analyze a task and select the most appropriate primary agent to handle it.
+
+Available Agents:
+{agents_info_str}
+
+Task: {task}
+
+Instructions:
+1. Analyze the task requirements
+2. Match the task to the agent whose capabilities best align with the task needs
+3. Consider the agent descriptions to understand their primary functions
+4. Respond with ONLY the name of the selected agent (oracle, tool_creator, safety_agent, or grading_agent)
+
+Selected Agent:"""
+        
+        # Use LLM to select the best agent
+        try:
+            from autogen import AssistantAgent
+            
+            # Create a temporary assistant agent for selection
+            selector_agent = AssistantAgent(
+                name="AgentSelector",
+                system_message="You are an expert at matching tasks to the most appropriate agents based on their capabilities.",
+                llm_config=self.llm_config
+            )
+            
+            # Get the selection
+            response = selector_agent.generate_reply(messages=[{"content": prompt, "role": "user"}])
+            
+            # Extract agent name from response
+            selected_agent = response.strip().lower()
+            
+            # Validate selection
+            valid_agents = ["oracle", "tool_creator", "safety_agent", "grading_agent"]
+            if selected_agent not in valid_agents:
+                # Try to extract a valid agent name from the response
+                for agent in valid_agents:
+                    if agent in selected_agent:
+                        selected_agent = agent
+                        break
+                else:
+                    # Default to tool_creator if no valid agent found
+                    selected_agent = "tool_creator"
+                    logger.warning(f"Invalid agent selection '{response}', defaulting to tool_creator")
+            
+            logger.info(f"Selected primary agent: {selected_agent} for task: {task[:50]}...")
+            return selected_agent
+            
+        except Exception as e:
+            logger.error(f"Error selecting primary agent: {e}")
+            # Fallback to tool_creator
+            logger.info("Falling back to tool_creator as primary agent")
+            return "tool_creator"
+    
     def _analyze_task_requirements(self, divine_text: str) -> List[str]:
-        """Analyze divine message to determine which agents should be involved"""
+        """Analyze divine message to determine which agents should be involved using intelligent routing"""
+        logger.info(f"Intelligently analyzing task requirements for: {divine_text[:100]}")
+        
+        # Select primary agent using LLM analysis
+        primary_agent = self.select_primary_agent(divine_text)
+        involved_agents = [primary_agent]
+        
+        # Log the selection
+        logger.info(f"Primary agent selected: {primary_agent}")
+        
+        # Let the primary agent decide if it needs help from other agents
+        # This is a simplified version - in Step 6, full agent-to-agent collaboration will be implemented
+        # For now, we'll add some common secondary agents based on task type
         text_lower = divine_text.lower()
-        involved_agents = []
         
-        # Always involve tool creator for most tasks
-        if any(word in text_lower for word in ["create", "build", "develop", "tool", "solution"]):
+        # If oracle is primary, often need tool_creator to synthesize answers
+        if primary_agent == "oracle" and "tool_creator" not in involved_agents:
             involved_agents.append("tool_creator")
+            logger.info("Added tool_creator to synthesize Oracle's knowledge into an answer")
         
-        # Involve safety agent if code/security is mentioned
-        if any(word in text_lower for word in ["safe", "secure", "analyze", "check", "validate"]):
+        # If safety is concerned, add safety agent
+        if any(word in text_lower for word in ["safe", "secure", "analyze", "check", "validate"]) and "safety_agent" not in involved_agents:
             involved_agents.append("safety_agent")
+            logger.info("Added safety_agent for security concerns")
         
-        # Involve grading agent for evaluation tasks
-        if any(word in text_lower for word in ["evaluate", "assess", "grade", "measure", "performance"]):
+        # If evaluation is mentioned, add grading agent
+        if any(word in text_lower for word in ["evaluate", "assess", "grade", "measure", "performance"]) and "grading_agent" not in involved_agents:
             involved_agents.append("grading_agent")
+            logger.info("Added grading_agent for evaluation tasks")
         
-        # Default to tool creator if no specific requirements detected
-        if not involved_agents:
-            involved_agents.append("tool_creator")
-        
+        logger.info(f"Final agent selection: {involved_agents}")
         return involved_agents
+    
+    def _detect_oracle_query(self, text_lower: str, original_text: str) -> bool:
+        """
+        Sophisticated detection of Oracle-type queries using pattern matching and intent classification.
+        Returns True if the query requires external knowledge.
+        """
+        import re
+        
+        # Pattern 1: Question words at the start (what, why, how, when, where, who)
+        question_patterns = [
+            r'^what\s+(is|are|was|were|does|do|did|can|could|would|will)',
+            r'^why\s+(is|are|was|were|does|do|did|can|could|would|will)',
+            r'^how\s+(is|are|was|were|does|do|did|can|could|would|will|to|do)',
+            r'^when\s+(is|are|was|were|does|do|did|can|could|would|will)',
+            r'^where\s+(is|are|was|were|does|do|did|can|could|would|will)',
+            r'^who\s+(is|are|was|were|does|do|did|can|could|would|will)',
+            r'^which\s+(is|are|was|were|does|do|did|can|could|would|will)',
+        ]
+        
+        for pattern in question_patterns:
+            if re.search(pattern, text_lower):
+                logger.info(f"🔍 PATTERN MATCH: Question pattern detected: {pattern}")
+                return True
+        
+        # Pattern 2: Informational intent keywords (includes computation)
+        informational_keywords = [
+            "origin", "history", "background", "explain", "describe", "tell me",
+            "information about", "details about", "facts about", "learn about",
+            "research", "study", "investigate", "explore", "discover",
+            "find out", "look up", "search for", "query about",
+            "calculate", "compute", "analyze", "process", "evaluate"
+        ]
+        
+        for keyword in informational_keywords:
+            if keyword in text_lower:
+                logger.info(f"🔍 KEYWORD MATCH: Informational keyword detected: {keyword}")
+                return True
+        
+        # Pattern 3: Explicit external knowledge requests
+        external_keywords = [
+            "oracle", "search", "web", "find", "lookup", "knowledge",
+            "external", "query", "internet", "online", "browse"
+        ]
+        
+        for keyword in external_keywords:
+            if keyword in text_lower:
+                logger.info(f"🔍 EXPLICIT: External knowledge keyword detected: {keyword}")
+                return True
+        
+        # Pattern 4: Factual query patterns (noun phrases asking for facts)
+        factual_patterns = [
+            r'(cause|causes)\s+of',
+            r'(reason|reasons)\s+for',
+            r'(definition|meaning)\s+of',
+            r'(inventor|creator|founder)\s+of',
+            r'(date|time|year|period)\s+(of|when)',
+        ]
+        
+        for pattern in factual_patterns:
+            if re.search(pattern, text_lower):
+                logger.info(f"🔍 FACTUAL PATTERN: Factual query pattern detected: {pattern}")
+                return True
+        
+        # Pattern 5: Questions ending with '?'
+        if original_text.strip().endswith('?'):
+            # Check if it's likely a factual question (not a code/tool creation question)
+            non_oracle_keywords = ["create", "build", "implement", "generate", "develop", "code", "write", "make"]
+            if not any(keyword in text_lower for keyword in non_oracle_keywords):
+                logger.info(f"🔍 QUESTION MARK: Factual question detected (ends with ?)")
+                return True
+        
+        logger.info(f"❌ NO ORACLE MATCH: Query does not require external knowledge")
+        return False
     
     async def _coordinate_agent_collaboration(self, task_record: Dict) -> Dict[str, Any]:
         """
@@ -204,7 +461,43 @@ class HyperagenticOrchestrator:
         divine_message = task_record["divine_message"]
         involved_agents = task_record["assigned_agents"]
         
-        logger.info(f"Coordinating collaboration for task {task_id} with agents: {involved_agents}")
+        # DIAGNOSTIC: Log which agents are involved
+        logger.info(f"🐛 DEBUG: Coordinating collaboration for task {task_id}")
+        logger.info(f"🐛 DEBUG: Involved agents: {involved_agents}")
+        logger.info(f"🐛 DEBUG: Divine message: {divine_message[:100]}")
+        
+        # Enable autonomous collaboration by letting the primary agent decide
+        primary_agent_name = involved_agents[0] if involved_agents else "tool_creator"
+        primary_agent = self.agents.get(primary_agent_name)
+        
+        if primary_agent:
+            # Ask primary agent if it can handle the task alone
+            logger.info(f"Asking primary agent {primary_agent_name} if it can handle task alone")
+            can_handle, missing_capabilities = primary_agent.can_handle_task(divine_message)
+            
+            if can_handle:
+                logger.info(f"Primary agent {primary_agent_name} can handle task alone")
+                # Let primary agent handle the task
+                return await self._handle_task_with_agent(primary_agent, divine_message, task_id)
+            else:
+                logger.info(f"Primary agent {primary_agent_name} needs help with: {missing_capabilities}")
+                # Facilitate collaboration between agents
+                helper_agents = primary_agent.identify_helper_agents(missing_capabilities, self.agent_registry)
+                logger.info(f"Identified helper agents: {helper_agents}")
+                
+                # Coordinate collaboration using either sequential or GroupChat approach
+                return await self.coordinate_agent_collaboration(primary_agent, divine_message, helper_agents, task_id)
+        else:
+            # Fallback to original coordination method
+            return await self._coordinate_agent_collaboration_original(task_record)
+    
+    async def _coordinate_agent_collaboration_original(self, task_record: Dict) -> Dict[str, Any]:
+        """
+        Original coordination method for backward compatibility.
+        """
+        task_id = task_record["id"]
+        divine_message = task_record["divine_message"]
+        involved_agents = task_record["assigned_agents"]
         
         collaboration_result = {
             "approach_decided": None,
@@ -309,7 +602,492 @@ class HyperagenticOrchestrator:
                     "message": tool_creation_result.get("message", "Unknown error")
                 }
         
+        # Oracle Agent's contribution - query external knowledge
+        if "oracle" in involved_agents:
+            logger.info(f"Consulting Oracle for external knowledge: {divine_message[:100]}")
+            oracle = self.agents["oracle"]
+            try:
+                from oracle_agent import KnowledgeSource
+                oracle_response = await oracle.query_external_knowledge(
+                    requester="DivineInterface",
+                    query_text=divine_message,
+                    source_type=KnowledgeSource.AUTO,  # Changed from WEB_SEARCH to AUTO
+                    parameters={"max_results": 10}
+                )
+                
+                # DIAGNOSTIC: Log what Oracle returned
+                logger.info(f"🔍 TRACE-4: main.py received oracle_response")
+                logger.info(f"🔍 TRACE-4: oracle_response.success = {oracle_response.success}")
+                logger.info(f"🔍 TRACE-4: oracle_response.data type = {type(oracle_response.data)}")
+                logger.info(f"🔍 TRACE-4: oracle_response.data length = {len(oracle_response.data) if isinstance(oracle_response.data, list) else 'not a list'}")
+                if isinstance(oracle_response.data, list) and oracle_response.data:
+                    logger.info(f"🔍 TRACE-4: First item in oracle_response.data: {oracle_response.data[0]}")
+                
+                collaboration_result["oracle_knowledge"] = oracle_response.data
+                
+                # DIAGNOSTIC: Verify assignment
+                logger.info(f"🔍 TRACE-4: After assignment, collaboration_result['oracle_knowledge'] = {type(collaboration_result['oracle_knowledge'])}")
+                logger.info(f"🔍 TRACE-4: collaboration_result['oracle_knowledge'] length = {len(collaboration_result['oracle_knowledge']) if isinstance(collaboration_result['oracle_knowledge'], list) else 'not a list'}")
+                
+                collaboration_result["agent_contributions"]["oracle"] = {
+                    "knowledge": oracle_response.data,
+                    "source": oracle_response.source,
+                    "success": oracle_response.success,
+                    "metadata": oracle_response.metadata
+                }
+                
+                # DIAGNOSTIC: Log Oracle response details
+                logger.info(f"🐛 DEBUG: Oracle returned knowledge: {len(str(oracle_response.data))} chars")
+                logger.info(f"🐛 DEBUG: Oracle success: {oracle_response.success}")
+                logger.info(f"🐛 DEBUG: ToolCreator in involved_agents? {'tool_creator' in involved_agents}")
+                
+                # FIX #2: Use ToolCreator's text synthesis method (NOT code generation)
+                if oracle_response.success and "tool_creator" in involved_agents:
+                    logger.info(f"✅ FIX: Synthesizing Oracle knowledge into readable answer")
+                    tool_creator = self.agents["tool_creator"]
+                    
+                    # Format the knowledge for synthesis
+                    if isinstance(oracle_response.data, list) and len(oracle_response.data) > 0:
+                        # Format search results nicely
+                        formatted_knowledge = "\n\n".join([
+                            f"Source {i+1}: {result.get('title', 'Untitled')}\n"
+                            f"URL: {result.get('url', 'N/A')}\n"
+                            f"Content: {result.get('snippet', 'No content')}"
+                            for i, result in enumerate(oracle_response.data[:5])  # Use top 5 results
+                        ])
+                    else:
+                        formatted_knowledge = json.dumps(oracle_response.data, indent=2)
+                    
+                    # Create synthesis prompt for text generation (not code)
+                    synthesis_prompt = f"""You are synthesizing information to answer a user's question.
+
+Question: {divine_message}
+
+External Knowledge Sources:
+{formatted_knowledge}
+
+Task: Based on the external knowledge above, provide a clear, comprehensive, and well-structured answer to the user's question. Your response should:
+1. Directly answer the question
+2. Include relevant details from the sources
+3. Be written in natural language (NOT code)
+4. Cite sources when mentioning specific facts
+5. Be concise but thorough
+
+Provide your answer below:"""
+                    
+                    # Call ToolCreator's text synthesis method (preserves code generation ability)
+                    synthesis_result = tool_creator.synthesize_text_response(
+                        prompt=synthesis_prompt,
+                        context={"oracle_data": oracle_response.data}
+                    )
+                    
+                    if synthesis_result["success"]:
+                        collaboration_result["synthesized_answer"] = synthesis_result["text"]
+                        collaboration_result["agent_contributions"]["tool_creator_synthesis"] = {
+                            "answer": synthesis_result["text"],
+                            "based_on_oracle_knowledge": True,
+                            "method": synthesis_result["method"],
+                            "sources_used": len(oracle_response.data) if isinstance(oracle_response.data, list) else 0
+                        }
+                        logger.info(f"✅ FIX: Successfully synthesized readable answer from Oracle knowledge")
+                    else:
+                        logger.error(f"⚠️ Text synthesis failed: {synthesis_result.get('error')}")
+                        # Fallback: provide formatted summary
+                        collaboration_result["synthesized_answer"] = f"Answer based on external research:\n\n{formatted_knowledge}"
+                else:
+                    logger.warning(f"⚠️ Cannot synthesize: oracle_success={oracle_response.success}, tool_creator_available={'tool_creator' in involved_agents}")
+                
+            except Exception as e:
+                logger.error(f"Oracle query failed: {e}")
+                collaboration_result["oracle_error"] = str(e)
+                collaboration_result["agent_contributions"]["oracle"] = {
+                    "error": str(e)
+                }
+        
+        # DIAGNOSTIC: Log final collaboration result structure
+        logger.info(f"🔍 TRACE-5: Final collaboration_result keys: {list(collaboration_result.keys())}")
+        logger.info(f"🔍 TRACE-5: Agent contributions: {list(collaboration_result['agent_contributions'].keys())}")
+        
+        # DIAGNOSTIC: Check oracle_knowledge specifically
+        if "oracle_knowledge" in collaboration_result:
+            logger.info(f"🔍 TRACE-5: oracle_knowledge exists in result")
+            logger.info(f"🔍 TRACE-5: oracle_knowledge type: {type(collaboration_result['oracle_knowledge'])}")
+            logger.info(f"🔍 TRACE-5: oracle_knowledge length: {len(collaboration_result['oracle_knowledge']) if isinstance(collaboration_result['oracle_knowledge'], list) else 'not a list'}")
+            if isinstance(collaboration_result['oracle_knowledge'], list) and collaboration_result['oracle_knowledge']:
+                logger.info(f"🔍 TRACE-5: First oracle_knowledge item: {collaboration_result['oracle_knowledge'][0]}")
+        else:
+            logger.error(f"🔍 TRACE-5: oracle_knowledge NOT in collaboration_result!")
+        
         return collaboration_result
+    
+    async def _handle_task_with_agent(self, agent, task: str, task_id: str) -> Dict[str, Any]:
+        """
+        Handle a task with a single agent.
+        
+        Args:
+            agent: The agent to handle the task
+            task: The task description
+            task_id: The task identifier
+            
+        Returns:
+            Result dictionary from the agent's work
+        """
+        logger.info(f"Handling task with agent: {agent.name}")
+        
+        # For now, we'll simulate the agent handling the task
+        # In a real implementation, this would depend on the agent type
+        result = {
+            "agent": agent.name,
+            "task_handled": task,
+            "result": f"Task handled by {agent.name}",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Add specific handling based on agent type
+        if agent.name == "tool_creator":
+            tool_result = agent.create_tool_from_requirements(task)
+            result["tool_creation"] = tool_result
+        elif agent.name == "oracle":
+            from oracle_agent import KnowledgeSource
+            oracle_result = await agent.query_external_knowledge(
+                requester="Orchestrator",
+                query_text=task,
+                source_type=KnowledgeSource.AUTO,
+                parameters={"max_results": 5}
+            )
+            result["oracle_query"] = {
+                "success": oracle_result.success,
+                "data": oracle_result.data,
+                "source": oracle_result.source
+            }
+        elif agent.name == "safety_agent":
+            # Safety agent needs code to analyze, so we'll create a simple test
+            test_code = "# Simple test code\nprint('Hello, World!')"
+            safety_result = agent.analyze_code_security(test_code)
+            result["safety_analysis"] = {
+                "security_level": safety_result.security_level.value,
+                "risk_score": safety_result.overall_risk_score,
+                "approval_status": safety_result.approval_status
+            }
+        elif agent.name == "grading_agent":
+            # Grading agent needs code to evaluate, so we'll create a simple test
+            test_code = "# Simple test code\ndef hello():\n    return 'Hello, World!'"
+            grading_result = agent.evaluate_tool_performance(test_code, "hello_function")
+            result["performance_evaluation"] = {
+                "composite_score": grading_result.composite_score,
+                "grade_letter": grading_result.grade_letter
+            }
+        
+        return result
+    
+    async def coordinate_agent_collaboration(
+        self,
+        primary_agent: Any,
+        task: str,
+        helper_agents: List[str],
+        task_id: str
+    ) -> Dict[str, Any]:
+        """
+        Coordinate collaboration between primary agent and helper agents.
+        
+        This implements autonomous agent collaboration where agents work together
+        to accomplish tasks they cannot handle alone.
+        
+        Args:
+            primary_agent: The primary agent handling the task
+            task: The task to be accomplished
+            helper_agents: List of helper agent names
+            task_id: Task identifier for tracking
+            
+        Returns:
+            Combined result from agent collaboration
+        """
+        logger.info(f"🤝 AUTONOMOUS COLLABORATION: Primary agent {primary_agent.name} requesting help from {helper_agents}")
+        
+        # Approach 1: Sequential Collaboration
+        # Let each helper agent contribute, then primary agent synthesizes
+        helper_results = {}
+        
+        for helper_name in helper_agents:
+            helper_agent = self.agents.get(helper_name)
+            if not helper_agent:
+                logger.warning(f"Helper agent {helper_name} not found")
+                continue
+            
+            logger.info(f"🤝 Requesting help from {helper_name}")
+            
+            # Create a help request message
+            from agent_communication import AgentMessage
+            help_request = primary_agent.request_help(task, [helper_name], self.agent_registry)
+            
+            # Handle the message with the helper agent
+            help_response = helper_agent.handle_message(help_request)
+            
+            # Get actual work from the helper agent
+            helper_result = await self._get_helper_contribution(helper_agent, task, task_id)
+            helper_results[helper_name] = helper_result
+            
+            logger.info(f"✅ Received help from {helper_name}")
+        
+        # Primary agent synthesizes all results
+        logger.info(f"🎯 Primary agent {primary_agent.name} synthesizing results from {len(helper_results)} helpers")
+        
+        final_result = await self._synthesize_collaboration_results(
+            primary_agent,
+            task,
+            helper_results,
+            task_id
+        )
+        
+        logger.info(f"✅ AUTONOMOUS COLLABORATION COMPLETE: Task handled with {len(helper_results)} helper agents")
+        
+        return final_result
+    
+    async def _get_helper_contribution(
+        self,
+        helper_agent: Any,
+        task: str,
+        task_id: str
+    ) -> Dict[str, Any]:
+        """
+        Get the actual contribution from a helper agent.
+        
+        Args:
+            helper_agent: The helper agent
+            task: The task description
+            task_id: Task identifier
+            
+        Returns:
+            The helper agent's contribution
+        """
+        logger.info(f"Getting contribution from {helper_agent.name}")
+        
+        # Different agents contribute in different ways
+        if helper_agent.name == "oracle":
+            from oracle_agent import KnowledgeSource
+            oracle_response = await helper_agent.query_external_knowledge(
+                requester="Collaboration",
+                query_text=task,
+                source_type=KnowledgeSource.AUTO,
+                parameters={"max_results": 5}
+            )
+            return {
+                "agent": "oracle",
+                "contribution_type": "external_knowledge",
+                "success": oracle_response.success,
+                "data": oracle_response.data,
+                "source": oracle_response.source
+            }
+        
+        elif helper_agent.name == "tool_creator":
+            tool_result = helper_agent.create_tool_from_requirements(task)
+            return {
+                "agent": "tool_creator",
+                "contribution_type": "tool_creation",
+                "success": tool_result["success"],
+                "data": tool_result
+            }
+        
+        elif helper_agent.name == "safety_agent":
+            # Safety agent needs code to analyze
+            return {
+                "agent": "safety_agent",
+                "contribution_type": "security_analysis",
+                "ready": True,
+                "message": "Ready to analyze code when provided"
+            }
+        
+        elif helper_agent.name == "grading_agent":
+            # Grading agent needs code to evaluate
+            return {
+                "agent": "grading_agent",
+                "contribution_type": "performance_evaluation",
+                "ready": True,
+                "message": "Ready to evaluate performance when provided"
+            }
+        
+        else:
+            return {
+                "agent": helper_agent.name,
+                "contribution_type": "general",
+                "message": f"Contribution from {helper_agent.name}"
+            }
+    
+    async def _synthesize_collaboration_results(
+        self,
+        primary_agent: Any,
+        task: str,
+        helper_results: Dict[str, Dict],
+        task_id: str
+    ) -> Dict[str, Any]:
+        """
+        Synthesize results from multiple agents into a final result.
+        
+        Args:
+            primary_agent: The primary agent
+            task: The original task
+            helper_results: Results from helper agents
+            task_id: Task identifier
+            
+        Returns:
+            Synthesized final result
+        """
+        logger.info(f"Synthesizing results from {len(helper_results)} agents")
+        
+        synthesis_result = {
+            "collaboration_type": "autonomous",
+            "primary_agent": primary_agent.name,
+            "helper_agents": list(helper_results.keys()),
+            "task": task,
+            "task_id": task_id,
+            "agent_contributions": helper_results,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # If oracle provided knowledge and tool_creator is available, synthesize
+        if "oracle" in helper_results and helper_results["oracle"].get("success"):
+            oracle_data = helper_results["oracle"].get("data", [])
+            
+            if primary_agent.name == "tool_creator":
+                # Tool creator can synthesize the knowledge
+                if isinstance(oracle_data, list) and len(oracle_data) > 0:
+                    formatted_knowledge = "\n\n".join([
+                        f"Source {i+1}: {result.get('title', 'Untitled')}\n"
+                        f"URL: {result.get('url', 'N/A')}\n"
+                        f"Content: {result.get('snippet', 'No content')}"
+                        for i, result in enumerate(oracle_data[:5])
+                    ])
+                else:
+                    formatted_knowledge = json.dumps(oracle_data, indent=2)
+                
+                synthesis_prompt = f"""You are synthesizing information to answer a user's question.
+
+Question: {task}
+
+External Knowledge Sources:
+{formatted_knowledge}
+
+Task: Provide a clear, comprehensive, and well-structured answer based on the external knowledge above.
+"""
+                
+                synthesis_text = primary_agent.synthesize_text_response(
+                    prompt=synthesis_prompt,
+                    context={"oracle_data": oracle_data}
+                )
+                
+                if synthesis_text.get("success"):
+                    synthesis_result["synthesized_answer"] = synthesis_text["text"]
+                    synthesis_result["synthesis_method"] = "tool_creator_with_oracle"
+        
+        # If tool was created, add safety analysis if available
+        if "tool_creator" in helper_results and "safety_agent" in helper_results:
+            tool_data = helper_results["tool_creator"].get("data", {})
+            if tool_data.get("success") and tool_data.get("code"):
+                safety_agent = self.agents.get("safety_agent")
+                if safety_agent:
+                    safety_report = safety_agent.analyze_code_security(
+                        tool_data["code"],
+                        context={"task_id": task_id, "collaboration": True}
+                    )
+                    synthesis_result["safety_analysis"] = {
+                        "security_level": safety_report.security_level.value,
+                        "risk_score": safety_report.overall_risk_score,
+                        "approval_status": safety_report.approval_status,
+                        "reasoning": safety_report.reasoning
+                    }
+        
+        # Add collaboration metrics
+        synthesis_result["collaboration_metrics"] = {
+            "total_agents": len(helper_results) + 1,  # +1 for primary
+            "successful_contributions": sum(1 for r in helper_results.values() if r.get("success", False)),
+            "collaboration_time": datetime.now().isoformat()
+        }
+        
+        logger.info(f"Synthesis complete with {synthesis_result['collaboration_metrics']['successful_contributions']} successful contributions")
+        
+        return synthesis_result
+    
+    async def coordinate_agent_collaboration_with_groupchat(
+        self,
+        primary_agent: Any,
+        task: str,
+        helper_agents: List[str],
+        task_id: str
+    ) -> Dict[str, Any]:
+        """
+        Coordinate collaboration using AutoGen GroupChat.
+        
+        This is an alternative, more powerful approach that lets agents
+        autonomously discuss and collaborate through a group chat.
+        
+        Args:
+            primary_agent: The primary agent handling the task
+            task: The task to be accomplished
+            helper_agents: List of helper agent names
+            task_id: Task identifier
+            
+        Returns:
+            Combined result from GroupChat collaboration
+        """
+        logger.info(f"🎭 GROUPCHAT COLLABORATION: Starting group chat with {[primary_agent.name] + helper_agents}")
+        
+        try:
+            from autogen import GroupChat, GroupChatManager
+            
+            # Gather all agent instances
+            all_agents = [primary_agent]
+            for helper_name in helper_agents:
+                helper = self.agents.get(helper_name)
+                if helper:
+                    all_agents.append(helper)
+            
+            logger.info(f"GroupChat participants: {[a.name for a in all_agents]}")
+            
+            # Create GroupChat
+            groupchat = GroupChat(
+                agents=all_agents,
+                messages=[],
+                max_round=10,
+                speaker_selection_method="auto"  # Agents decide who speaks next
+            )
+            
+            # Create GroupChat Manager
+            manager = GroupChatManager(
+                groupchat=groupchat,
+                llm_config=self.llm_config
+            )
+            
+            # Initiate the collaboration
+            logger.info(f"Initiating group chat for task: {task[:100]}...")
+            
+            # Primary agent starts the discussion
+            chat_result = primary_agent.initiate_chat(
+                manager,
+                message=f"Task: {task}\n\nI need help with this task. Let's collaborate to solve it.",
+                silent=False
+            )
+            
+            # Extract results from chat history
+            result = {
+                "collaboration_type": "groupchat",
+                "primary_agent": primary_agent.name,
+                "participants": [a.name for a in all_agents],
+                "task": task,
+                "task_id": task_id,
+                "chat_history": chat_result.chat_history if hasattr(chat_result, 'chat_history') else [],
+                "total_rounds": len(chat_result.chat_history) if hasattr(chat_result, 'chat_history') else 0,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            logger.info(f"✅ GROUPCHAT COLLABORATION COMPLETE: {result['total_rounds']} rounds of discussion")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"GroupChat collaboration failed: {e}")
+            # Fallback to sequential collaboration
+            logger.info("Falling back to sequential collaboration")
+            return await self.coordinate_agent_collaboration(primary_agent, task, helper_agents, task_id)
     
     async def _complete_task(self, task_record: Dict, result: Dict):
         """Complete a task and update all relevant systems"""

@@ -42,6 +42,10 @@ venv.bak/
 *~
 .DS_Store
 
+# Sensitive directories
+.kiro/
+.roo/
+
 # Cache
 .cache/
 *.cache
@@ -78,3 +82,10 @@ htmlcov/
 
 # Conda
 .conda/
+
+# Test results and temporary files
+test_results/
+startup.log
+*REPORT*.md
+
+# Development logs

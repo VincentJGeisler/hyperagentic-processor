@@ -36,6 +36,8 @@ RUN chown -R agent_collective:agent_collective /universe
 # Copy the agent reality into the container
 COPY src/ /universe/src/
 COPY config/ /universe/config/
+COPY .kiro/ /universe/.kiro/
+COPY .env /universe/src/
 
 # Set resource limits that appear as natural laws
 # Memory limit (Conservation of Memory Law)

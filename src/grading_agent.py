@@ -757,6 +757,96 @@ When evaluating performance, you should:
             "evaluation_rate": f"{total_evaluations / max(1, len(self.evaluation_history))} evaluations per session"
         }
 
+    @property
+    def capabilities(self) -> List[str]:
+        """Return list of this agent's capabilities"""
+        return ["performance_evaluation", "quality_assessment", "metrics_analysis"]
+
+    def can_handle_task(self, task: str) -> Tuple[bool, List[str]]:
+        """
+        Analyze if this agent can handle the task alone using LLM-based analysis.
+        
+        Args:
+            task: The task description
+            
+        Returns:
+            Tuple of (can_handle: bool, missing_capabilities: List[str])
+        """
+        # Create a prompt for the LLM to analyze the task
+        prompt = f"""You are {self.name} with these capabilities: {self.capabilities}
+
+Task: {task}
+
+Analyze if you can complete this task with your current capabilities.
+
+Respond in JSON:
+{{
+    "can_handle": true/false,
+    "missing_capabilities": ["capability1", "capability2"],
+    "reasoning": "explanation"
+}}
+"""
+
+        try:
+            # Use the existing LLM client from the parent class
+            response = self._call_llm(prompt)
+            
+            # Parse the JSON response
+            import json
+            parsed = json.loads(response)
+            
+            # Create TaskAnalysis object
+            analysis = TaskAnalysis(
+                can_handle=parsed["can_handle"],
+                missing_capabilities=parsed["missing_capabilities"],
+                reasoning=parsed["reasoning"],
+                confidence=0.8 if parsed["can_handle"] else 0.6
+            )
+            
+            return analysis.can_handle, analysis.missing_capabilities
+            
+        except Exception as e:
+            logger.error(f"Error in GradingAgent can_handle_task: {e}")
+            # Conservative fallback - assume we can't handle tasks we can't analyze
+            return False, ["analysis_failed"]
+
+    def _call_llm(self, prompt: str) -> str:
+        """
+        Use the existing LLM configuration to make a call.
+        This is a simplified version that uses the autogen functionality.
+        """
+        import autogen
+        
+        # Create a temporary assistant to make the call
+        temp_assistant = autogen.AssistantAgent(
+            name="temp_grading_analyzer",
+            system_message="You are an expert at analyzing tasks and capabilities for performance evaluation.",
+            llm_config=self.llm_config
+        )
+        
+        # Create a user proxy for the interaction
+        user_proxy = autogen.UserProxyAgent(
+            name="task_analyzer",
+            human_input_mode="NEVER",
+            code_execution_config=False
+        )
+        
+        # Initiate a chat to get the analysis
+        response = user_proxy.initiate_chat(
+            temp_assistant,
+            message=prompt,
+            silent=True
+        )
+        
+        # Extract the last message from the assistant
+        messages = response.chat_history
+        for msg in reversed(messages):
+            if msg.get("name") == "temp_grading_analyzer" and msg.get("content"):
+                return msg["content"]
+        
+        # Fallback if no response found
+        return '{"can_handle": false, "missing_capabilities": ["response_parsing_failed"], "reasoning": "Could not parse LLM response"}'
+
 def create_grading_agent(llm_config: Dict[str, Any]) -> GradingAgent:
     """Factory function to create a functional GradingAgent"""
     return GradingAgent(llm_config)

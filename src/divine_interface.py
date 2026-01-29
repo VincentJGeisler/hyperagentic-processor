@@ -13,7 +13,16 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+from typing import Any
 import json
+
+# Import MCP classes for type hints
+try:
+    from mcp_registry_manager import MCPPackage
+except ImportError:
+    # Define a minimal version for type hints if not available
+    class MCPPackage:
+        pass
 import sqlite3
 from pathlib import Path
 
@@ -63,6 +72,55 @@ class DivineFeedback(BaseModel):
     blessings_granted: List[str] = []
     areas_for_improvement: List[str] = []
     next_quest_suggestions: List[str] = []
+
+class MCPPackageModel(BaseModel):
+    """Pydantic model for MCP package information"""
+    name: str
+    description: str
+    version: str
+    source: str
+    repository_url: str
+    install_command: str
+    language: str
+    trust_score: float
+    downloads: int = 0
+    stars: int = 0
+    last_updated: Optional[str] = None
+    compatibility: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = {}
+
+class InstallationResultModel(BaseModel):
+    """Pydantic model for MCP installation result"""
+    success: bool
+    package_name: str
+    executable_path: Optional[str] = None
+    config_updated: bool = False
+    error_message: Optional[str] = None
+    installation_time: float = 0.0
+    sandbox_path: Optional[str] = None
+
+class MCPGenerateRequest(BaseModel):
+    """Pydantic model for MCP generation request"""
+    name: str
+    description: str
+    capability: str
+    input_schema: Optional[Dict[str, Any]] = None
+    output_schema: Optional[Dict[str, Any]] = None
+    language: str = "python"
+    dependencies: Optional[List[str]] = None
+    safety_constraints: Optional[List[str]] = None
+    auto_install: bool = False
+
+class MCPRequirementsModel(BaseModel):
+    """Pydantic model for MCP requirements"""
+    name: str
+    description: str
+    capability: str
+    input_schema: Dict[str, Any]
+    output_schema: Dict[str, Any]
+    language: str = "python"
+    dependencies: List[str] = []
+    safety_constraints: List[str] = []
 
 class DivineInterface:
     """
@@ -257,6 +315,12 @@ class DivineInterface:
             "status": "acknowledged",
             "message": "Divine judgment has been delivered to the agent collective"
         }
+
+class OracleQueryRequest(BaseModel):
+    query: str
+    requester: Optional[str] = None
+    source_type: Optional[str] = "auto"  # "web_search", "mcp_tool", "auto"
+    parameters: Optional[Dict[str, Any]] = None
     
     async def get_pending_messages(self) -> List[DivineMessage]:
         """Get all unprocessed divine messages"""
@@ -378,6 +442,174 @@ async def divine_status():
         "active_connections": len(divine_interface.active_connections),
         "interface_version": "1.0.0",
         "sacred_database": str(divine_interface.db_path)
+    }
+
+# === MCP API Endpoints ===
+
+@app.get("/oracle/mcp/discover")
+async def discover_mcp_servers(
+    query: str,
+    max_results: int = 10
+):
+    """Discover MCP servers."""
+    # Get oracle from app state (assuming it's stored there)
+    oracle = app.state.orchestrator.agents.get("oracle") if hasattr(app.state, 'orchestrator') else None
+    if not oracle:
+        raise HTTPException(status_code=503, detail="Oracle agent not available")
+    
+    packages = await oracle.discover_mcp_servers(query, max_results)
+    return {
+        "query": query,
+        "results": [pkg.to_dict() for pkg in packages],
+        "count": len(packages)
+    }
+
+@app.post("/oracle/mcp/install")
+async def install_mcp_server(
+    package_data: MCPPackageModel,
+    approve: bool = False
+):
+    """Install an MCP server."""
+    # Get oracle from app state
+    oracle = app.state.orchestrator.agents.get("oracle") if hasattr(app.state, 'orchestrator') else None
+    if not oracle:
+        raise HTTPException(status_code=503, detail="Oracle agent not available")
+    
+    # Convert Pydantic model to MCPPackage dataclass
+    package_dict = package_data.dict()
+    package = MCPPackage(**package_dict)
+    
+    result = await oracle.install_mcp_server(package, approve)
+    return result.to_dict()
+
+@app.get("/oracle/mcp/list")
+async def list_installed_mcps():
+    """List installed MCP servers."""
+    # Get oracle from app state
+    oracle = app.state.orchestrator.agents.get("oracle") if hasattr(app.state, 'orchestrator') else None
+    if not oracle:
+        raise HTTPException(status_code=503, detail="Oracle agent not available")
+    
+    mcps = await oracle.list_available_mcps()
+    return {
+        "installed_mcps": [mcp.to_dict() for mcp in mcps],
+        "count": len(mcps)
+    }
+
+@app.post("/oracle/mcp/generate")
+async def generate_mcp_server(request: MCPGenerateRequest):
+    """Generate a new MCP server from requirements."""
+    # Get oracle from app state
+    oracle = app.state.orchestrator.agents.get("oracle") if hasattr(app.state, 'orchestrator') else None
+    if not oracle:
+        raise HTTPException(status_code=503, detail="Oracle agent not available")
+    
+    # Convert Pydantic model to MCPRequirements dataclass
+    from mcp_generator import MCPRequirements
+    requirements = MCPRequirements(
+        name=request.name,
+        description=request.description,
+        capability=request.capability,
+        input_schema=request.input_schema or {},
+        output_schema=request.output_schema or {},
+        language=request.language,
+        dependencies=request.dependencies or [],
+        safety_constraints=request.safety_constraints or []
+    )
+    
+    result = await oracle.generate_mcp_server(requirements, auto_install=request.auto_install)
+    
+    # Convert result to dictionary
+    result_dict = {
+        "success": result.success,
+        "mcp_name": result.mcp_name,
+        "output_directory": result.output_directory,
+        "executable_path": result.executable_path,
+        "validation_passed": result.validation_passed,
+        "test_results": result.test_results,
+        "error_message": result.error_message,
+        "generation_time": result.generation_time,
+        "code_files": result.code_files,
+        "installed": getattr(result, 'installed', False)
+    }
+    
+    return result_dict
+
+@app.post("/oracle/mcp/find-or-create")
+async def find_or_create_mcp(capability: str, auto_install: bool = True):
+    """Smart MCP acquisition: find existing or create new."""
+    # Get oracle from app state
+    oracle = app.state.orchestrator.agents.get("oracle") if hasattr(app.state, 'orchestrator') else None
+    if not oracle:
+        raise HTTPException(status_code=503, detail="Oracle agent not available")
+    
+    result = await oracle.find_or_create_mcp(capability)
+    
+    # Check if result is a GenerationResult or MCPPackage
+    if hasattr(result, 'success'):  # GenerationResult
+        return {
+            "found_existing": False,
+            "generation_result": {
+                "success": result.success,
+                "mcp_name": result.mcp_name,
+                "output_directory": result.output_directory,
+                "executable_path": result.executable_path,
+                "validation_passed": result.validation_passed,
+                "test_results": result.test_results,
+                "error_message": result.error_message,
+                "generation_time": result.generation_time,
+                "code_files": result.code_files,
+                "installed": getattr(result, 'installed', False)
+            }
+        }
+    else:  # MCPPackage
+        return {
+            "found_existing": True,
+            "package": result.to_dict() if hasattr(result, 'to_dict') else str(result)
+        }
+
+@app.get("/oracle/stats")
+async def get_oracle_stats():
+    """Get Oracle statistics."""
+    # Get oracle from app state
+    oracle = app.state.orchestrator.agents.get("oracle") if hasattr(app.state, 'orchestrator') else None
+    if not oracle:
+        raise HTTPException(status_code=503, detail="Oracle agent not available")
+    
+    stats = oracle.get_oracle_statistics()
+    return stats
+
+@app.post("/oracle/query")
+async def oracle_query(request: OracleQueryRequest):
+    """
+    Execute Oracle query with intelligent routing.
+    
+    The Oracle will automatically:
+    1. Use web search for simple information queries
+    2. Use installed MCPs for specialized capabilities
+    3. Discover/install MCPs if needed
+    4. Generate new MCPs as a last resort
+    """
+    oracle = app.state.orchestrator.agents.get("oracle")
+    
+    # Convert source_type string to KnowledgeSource enum
+    from oracle_agent import KnowledgeSource
+    source_type = KnowledgeSource[request.source_type.upper()] if request.source_type else KnowledgeSource.AUTO
+    
+    response = await oracle.query_external_knowledge(
+        requester=request.requester or "API",
+        query_text=request.query,
+        source_type=source_type,
+        parameters=request.parameters
+    )
+    
+    return {
+        "query_id": response.query_id,
+        "success": response.success,
+        "data": response.data,
+        "source": response.source,
+        "metadata": response.metadata,
+        "timestamp": response.timestamp.isoformat()
     }
 
 if __name__ == "__main__":

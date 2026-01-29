@@ -597,6 +597,91 @@ if __name__ == "__main__":
                 "fallback_available": True
             }
     
+    def synthesize_text_response(self, prompt: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Synthesize a readable text answer from external knowledge using the LLM.
+        
+        This method takes a synthesis prompt and uses the LLM to create a coherent,
+        synthesized answer rather than just listing sources.
+        
+        Args:
+            prompt: The synthesis prompt with question and knowledge sources
+            context: Context dict containing oracle_data and other metadata
+            
+        Returns:
+            Dict with success, text, method, and error (if applicable)
+        """
+        logger.info(f"Synthesizing text response using LLM...")
+        
+        # Extract oracle data from context if available
+        oracle_data = context.get("oracle_data", [])
+        logger.info(f"Oracle data available: {len(oracle_data) if isinstance(oracle_data, list) else 0} sources")
+        
+        # Use the LLM to synthesize via direct OpenAI client
+        try:
+            import os
+            from openai import OpenAI
+            
+            # Get API key directly from environment (more reliable)
+            api_key = os.getenv("GROQ_API_KEY")
+            if not api_key:
+                logger.error("GROQ_API_KEY not found in environment")
+                return {
+                    "success": False,
+                    "text": "",
+                    "method": "llm_synthesis",
+                    "error": "GROQ_API_KEY not configured"
+                }
+            
+            # Create OpenAI client with Groq endpoint
+            client = OpenAI(
+                api_key=api_key,
+                base_url="https://api.groq.com/openai/v1"
+            )
+            
+            # Use llama-3.3-70b-versatile model
+            model = "llama-3.3-70b-versatile"
+            
+            # Call the LLM with Groq's llama model
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=2000
+            )
+            
+            synthesized_text = response.choices[0].message.content.strip()
+            
+            if not synthesized_text:
+                logger.warning("LLM returned empty response")
+                return {
+                    "success": False,
+                    "text": "",
+                    "method": "llm_synthesis",
+                    "error": "LLM returned empty response"
+                }
+            
+            logger.info(f"Successfully synthesized answer ({len(synthesized_text)} chars)")
+            return {
+                "success": True,
+                "text": synthesized_text,
+                "method": "llm_synthesis",
+                "sources_used": len(oracle_data) if isinstance(oracle_data, list) else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"LLM synthesis failed: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {
+                "success": False,
+                "text": "",
+                "method": "llm_synthesis",
+                "error": str(e)
+            }
+    
     def get_created_tools(self) -> Dict[str, Any]:
         """Get information about all created tools"""
         return {
@@ -608,6 +693,96 @@ if __name__ == "__main__":
                 "most_common_type": "custom"     # Would calculate from actual data
             }
         }
+
+    @property
+    def capabilities(self) -> List[str]:
+        """Return list of this agent's capabilities"""
+        return ["code_generation", "tool_creation", "text_synthesis"]
+
+    def can_handle_task(self, task: str) -> Tuple[bool, List[str]]:
+        """
+        Analyze if this agent can handle the task alone using LLM-based analysis.
+        
+        Args:
+            task: The task description
+            
+        Returns:
+            Tuple of (can_handle: bool, missing_capabilities: List[str])
+        """
+        # Create a prompt for the LLM to analyze the task
+        prompt = f"""You are {self.name} with these capabilities: {self.capabilities}
+
+Task: {task}
+
+Analyze if you can complete this task with your current capabilities.
+
+Respond in JSON:
+{{
+    "can_handle": true/false,
+    "missing_capabilities": ["capability1", "capability2"],
+    "reasoning": "explanation"
+}}
+"""
+
+        try:
+            # Use the existing LLM client from the parent class
+            response = self._call_llm(prompt)
+            
+            # Parse the JSON response
+            import json
+            parsed = json.loads(response)
+            
+            # Create TaskAnalysis object
+            analysis = TaskAnalysis(
+                can_handle=parsed["can_handle"],
+                missing_capabilities=parsed["missing_capabilities"],
+                reasoning=parsed["reasoning"],
+                confidence=0.8 if parsed["can_handle"] else 0.6
+            )
+            
+            return analysis.can_handle, analysis.missing_capabilities
+            
+        except Exception as e:
+            logger.error(f"Error in ToolCreator can_handle_task: {e}")
+            # Conservative fallback - assume we can't handle tasks we can't analyze
+            return False, ["analysis_failed"]
+
+    def _call_llm(self, prompt: str) -> str:
+        """
+        Use the existing LLM configuration to make a call.
+        This is a simplified version that uses the autogen functionality.
+        """
+        import autogen
+        
+        # Create a temporary assistant to make the call
+        temp_assistant = autogen.AssistantAgent(
+            name="temp_tool_creator_analyzer",
+            system_message="You are an expert at analyzing tasks and capabilities for tool creation.",
+            llm_config=self.llm_config
+        )
+        
+        # Create a user proxy for the interaction
+        user_proxy = autogen.UserProxyAgent(
+            name="task_analyzer",
+            human_input_mode="NEVER",
+            code_execution_config=False
+        )
+        
+        # Initiate a chat to get the analysis
+        response = user_proxy.initiate_chat(
+            temp_assistant,
+            message=prompt,
+            silent=True
+        )
+        
+        # Extract the last message from the assistant
+        messages = response.chat_history
+        for msg in reversed(messages):
+            if msg.get("name") == "temp_tool_creator_analyzer" and msg.get("content"):
+                return msg["content"]
+        
+        # Fallback if no response found
+        return '{"can_handle": false, "missing_capabilities": ["response_parsing_failed"], "reasoning": "Could not parse LLM response"}'
 
 def create_tool_creator_agent(llm_config: Dict[str, Any]) -> ToolCreatorAgent:
     """Factory function to create a functional ToolCreator agent"""

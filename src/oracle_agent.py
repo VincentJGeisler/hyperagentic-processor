@@ -18,13 +18,23 @@ All external access is mediated through the Oracle and monitored by the SafetyAg
 import logging
 import json
 import hashlib
+import os
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 from enum import Enum
 import re
+import asyncio
+from dataclasses import dataclass, asdict
 
 from motivated_agent import MotivatedAgent
 from agent_drive_system import DriveType
+from web_search_manager import WebSearchManager, SearchResult
+from config.mcp_config import MCPConfigurationManager, initialize_config
+
+# MCP Discovery & Installation imports
+from mcp_registry_manager import MCPRegistryManager, MCPPackage
+from mcp_installer import MCPInstaller, InstallationResult, InstalledMCP
+from mcp_generator import MCPGenerator, MCPRequirements, GenerationResult
 
 logger = logging.getLogger("OracleAgent")
 
@@ -35,6 +45,8 @@ class KnowledgeSource(Enum):
     DOCUMENT = "document"
     API = "api"
     DATABASE = "database"
+    MCP_TOOL = "mcp_tool"  # NEW: Use specific MCP tool
+    AUTO = "auto"  # NEW: Intelligent routing
 
 class OracleQuery:
     """Represents a query to the Oracle"""
@@ -63,14 +75,15 @@ class OracleResponse:
         success: bool,
         data: Any,
         source: str,
-        metadata: Dict[str, Any]
+        metadata: Dict[str, Any],
+        timestamp: Optional[datetime] = None
     ):
         self.query_id = query_id
         self.success = success
         self.data = data
         self.source = source
         self.metadata = metadata
-        self.timestamp = datetime.now()
+        self.timestamp = timestamp if timestamp is not None else datetime.now()
 
 class OracleAgent(MotivatedAgent):
     """
@@ -95,8 +108,8 @@ class OracleAgent(MotivatedAgent):
     """
     
     def __init__(self, llm_config: Dict[str, Any], safety_agent=None):
-        system_message = """You are the Oracle - a mystical entity with access to knowledge 
-beyond the universe's boundaries. Other agents come to you seeking information from the 
+        system_message = """You are the Oracle - a mystical entity with access to knowledge
+beyond the universe's boundaries. Other agents come to you seeking information from the
 external realm.
 
 Your role:
@@ -115,7 +128,7 @@ You have access to these divine powers:
 
 SPECIAL ABILITY - MCP Server Installation:
 You have the unique power to install new MCP servers to expand your capabilities.
-When you need a capability you don't have (like PDF parsing, browser automation, 
+When you need a capability you don't have (like PDF parsing, browser automation,
 database access), you can install the appropriate MCP server.
 
 Available MCP servers you can install:
@@ -126,8 +139,8 @@ Available MCP servers you can install:
 - mcp-server-fetch (advanced web fetching)
 - And many others from the MCP ecosystem
 
-When an agent asks for something you can't currently do, you can install the 
-appropriate MCP server to gain that capability. This makes you continuously 
+When an agent asks for something you can't currently do, you can install the
+appropriate MCP server to gain that capability. This makes you continuously
 more powerful and useful.
 
 When agents ask you questions, you consult the external realm and return knowledge
@@ -141,6 +154,20 @@ in a clear, structured format. You are wise, patient, and thorough."""
         )
         
         self.safety_agent = safety_agent
+        
+        # MCP Configuration Manager
+        self.config_manager: Optional[MCPConfigurationManager] = None
+        self.mcp_config: Dict[str, Any] = {}
+        
+        # MCP Generator
+        self.mcp_generator: Optional[MCPGenerator] = None
+        
+        # MCP Discovery & Installation Managers
+        self.mcp_registry_manager: Optional[MCPRegistryManager] = None
+        self.mcp_installer: Optional[MCPInstaller] = None
+        
+        # Web Search Manager (initialized in async initialize method)
+        self.web_search_manager: Optional[WebSearchManager] = None
         
         # Knowledge cache to reduce external calls
         self.knowledge_cache: Dict[str, OracleResponse] = {}
@@ -168,7 +195,108 @@ in a clear, structured format. You are wise, patient, and thorough."""
         self.drive_system.drives[DriveType.CONNECTION].intensity = 0.85
         self.drive_system.drives[DriveType.CREATION].intensity = 0.80  # Can create new capabilities
         
+        # Orchestrator reference (set later)
+        self.orchestrator = None
+        
         logger.info("Oracle agent initialized with external knowledge access and MCP installation capability")
+    
+    async def initialize(self):
+        """
+        Initialize async components (config manager and web search manager).
+        Should be called after instantiation.
+        """
+        logger.info("🔧 FIX: Oracle.initialize() called - starting initialization")
+        try:
+            # Initialize configuration
+            self.config_manager = MCPConfigurationManager()
+            self.mcp_config = await self.config_manager.load_configuration()
+            logger.info("✅ MCP configuration loaded")
+            
+            # FIX #1: Populate api_key_available dynamically by checking environment
+            web_search_config = self.mcp_config.get("web_search", {})
+            providers = web_search_config.get("providers", {})
+            
+            logger.info(f"🔧 FIX: Found {len(providers)} providers in config")
+            
+            for provider_name, provider_config in providers.items():
+                api_key_env = provider_config.get("api_key_env")
+                logger.info(f"🔧 FIX: Processing provider '{provider_name}', api_key_env={api_key_env}")
+                
+                if api_key_env:
+                    # Check if the API key exists in environment
+                    api_key_value = os.getenv(api_key_env)
+                    api_key_available = bool(api_key_value)
+                    provider_config["api_key_available"] = api_key_available
+                    logger.info(f"✅ FIX: Provider '{provider_name}': api_key_available={api_key_available} (key exists: {api_key_value is not None})")
+                else:
+                    provider_config["api_key_available"] = False
+                    logger.warning(f"⚠️ Provider '{provider_name}': no api_key_env specified")
+            
+            # Log final provider config
+            logger.info(f"🔧 FIX: Final providers config: {json.dumps({k: {**v, 'api_key_env': '***'} for k, v in providers.items()}, indent=2)}")
+            
+            # Log the full web_search_config being passed to WebSearchManager
+            logger.info(f"🔧 FIX: Full web_search_config being passed: {json.dumps(web_search_config, indent=2)}")
+            
+            # Initialize web search manager with updated config
+            self.web_search_manager = WebSearchManager(web_search_config)
+            await self.web_search_manager.initialize()
+            logger.info("✅ Web search manager initialized with updated config")
+            
+            # Initialize MCP registry manager
+            self.mcp_registry_manager = MCPRegistryManager(self.mcp_config)
+            await self.mcp_registry_manager.initialize()
+            logger.info("MCP registry manager initialized")
+            
+            # Initialize MCP installer
+            self.mcp_installer = MCPInstaller(
+                safety_agent=self.safety_agent,
+                config_manager=self.config_manager,
+                config_path=".kiro/settings/mcp.json"
+            )
+            logger.info("MCP installer initialized")
+            
+            # Initialize MCP generator if we have the required agents
+            if hasattr(self, 'orchestrator') and self.orchestrator:
+                tool_creator = self.orchestrator.agents.get("tool_creator")
+                if tool_creator and self.safety_agent:
+                    from mcp_generator import create_mcp_generator
+                    self.mcp_generator = create_mcp_generator(tool_creator, self.safety_agent)
+                    logger.info("MCP generator initialized")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize Oracle components: {e}")
+            # If web_search_manager wasn't initialized, create it with the config we have
+            if self.web_search_manager is None:
+                web_search_config = self.mcp_config.get("web_search", {}) if self.mcp_config else {}
+                # Apply the same fix for api_key_available
+                providers = web_search_config.get("providers", {})
+                for provider_name, provider_config in providers.items():
+                    api_key_env = provider_config.get("api_key_env")
+                    if api_key_env:
+                        api_key_available = bool(os.getenv(api_key_env))
+                        provider_config["api_key_available"] = api_key_available
+                        logger.info(f"✅ FIX (fallback): Provider '{provider_name}': api_key_available={api_key_available}")
+                    else:
+                        provider_config["api_key_available"] = False
+                
+                self.web_search_manager = WebSearchManager(web_search_config)
+                await self.web_search_manager.initialize()
+    
+    def set_orchestrator(self, orchestrator):
+        """Set the orchestrator reference and initialize MCP generator."""
+        self.orchestrator = orchestrator
+        
+        # Initialize MCP generator if we have the required agents
+        if self.orchestrator and hasattr(self.orchestrator, 'agents'):
+            tool_creator = self.orchestrator.agents.get("tool_creator")
+            if tool_creator and self.safety_agent:
+                try:
+                    from mcp_generator import create_mcp_generator
+                    self.mcp_generator = create_mcp_generator(tool_creator, self.safety_agent)
+                    logger.info("MCP generator initialized with orchestrator")
+                except Exception as e:
+                    logger.error(f"Failed to initialize MCP generator: {e}")
     
     def _generate_cache_key(self, query_text: str, source_type: KnowledgeSource, parameters: Dict) -> str:
         """Generate cache key for query"""
@@ -410,103 +538,53 @@ in a clear, structured format. You are wise, patient, and thorough."""
         self,
         requester: str,
         query_text: str,
-        source_type: KnowledgeSource,
+        source_type: KnowledgeSource = KnowledgeSource.WEB_SEARCH,
         parameters: Optional[Dict[str, Any]] = None
     ) -> OracleResponse:
         """
-        Query external knowledge sources.
+        Enhanced query processing with intelligent routing.
         
-        This is the main entry point for agents seeking external information.
+        Workflow:
+        1. Direct web search for simple information queries
+        2. Check for relevant installed MCPs for specialized queries
+        3. Discover/install MCPs if specific capability needed
+        4. Generate new MCP if nothing exists for complex needs
         """
         parameters = parameters or {}
         query_id = f"oracle_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
         
         logger.info(f"Oracle query from {requester}: {query_text[:100]}")
         
-        # Create query object
-        query = OracleQuery(
-            query_id=query_id,
-            requester=requester,
-            query_text=query_text,
-            source_type=source_type,
-            parameters=parameters
-        )
-        
-        self.query_history.append(query)
-        self.stats["total_queries"] += 1
-        
-        # Check cache first
-        cache_key = self._generate_cache_key(query_text, source_type, parameters)
-        cached_response = self._check_cache(cache_key)
-        if cached_response:
-            return cached_response
-        
-        # Request safety approval if SafetyAgent available
-        if self.safety_agent:
-            approved = await self._request_safety_approval(query)
-            if not approved:
-                self.stats["safety_rejections"] += 1
-                return OracleResponse(
-                    query_id=query_id,
-                    success=False,
-                    data=None,
-                    source="safety_rejection",
-                    metadata={"reason": "Query rejected by SafetyAgent"}
-                )
-        
-        # Execute query based on source type
-        try:
-            if source_type == KnowledgeSource.WEB_SEARCH:
-                response = await self._web_search(query)
-            elif source_type == KnowledgeSource.WEB_PAGE:
-                response = await self._fetch_web_page(query)
-            elif source_type == KnowledgeSource.DOCUMENT:
-                response = await self._fetch_document(query)
-            elif source_type == KnowledgeSource.API:
-                response = await self._call_api(query)
-            else:
-                response = OracleResponse(
-                    query_id=query_id,
-                    success=False,
-                    data=None,
-                    source="unknown",
-                    metadata={"error": f"Unknown source type: {source_type}"}
-                )
-            
-            # Cache successful responses
-            if response.success:
-                self.knowledge_cache[cache_key] = response
-                self.stats["successful_queries"] += 1
-            
-            self.stats["external_calls"] += 1
-            
-            # Update psychological state based on success
-            self._process_query_result(response.success)
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"Oracle query failed: {e}")
-            return OracleResponse(
-                query_id=query_id,
-                success=False,
-                data=None,
-                source="error",
-                metadata={"error": str(e)}
+        # Safety approval first
+        approval = await self._request_safety_approval(query_text, parameters)
+        if not approval:
+            return self._create_error_response(
+                query_text,
+                f"Safety approval denied"
             )
-    
-    async def _request_safety_approval(self, query: OracleQuery) -> bool:
-        """Request approval from SafetyAgent for external query"""
-        logger.info(f"Requesting safety approval for query: {query.query_id}")
         
-        # Create safety check context
-        safety_context = {
-            "query_type": "external_knowledge_access",
-            "requester": query.requester,
-            "query_text": query.query_text,
-            "source_type": query.source_type.value,
-            "parameters": query.parameters
-        }
+        # Determine query type and route appropriately
+        if source_type == KnowledgeSource.WEB_SEARCH:
+            # Direct web search for information queries
+            return await self._execute_web_search(query_text, parameters)
+        
+        elif source_type == KnowledgeSource.MCP_TOOL:
+            # Use specific MCP tool
+            mcp_name = parameters.get("mcp_name") if parameters else None
+            tool_name = parameters.get("tool_name") if parameters else None
+            return await self._execute_mcp_tool(mcp_name, tool_name, query_text, parameters)
+        
+        elif source_type == KnowledgeSource.AUTO:
+            # Intelligent routing based on query analysis
+            return await self._auto_route_query(query_text, parameters)
+        
+        else:
+            # Fallback to web search
+            return await self._execute_web_search(query_text, parameters)
+    
+    async def _request_safety_approval(self, query_text: str, parameters: Optional[Dict[str, Any]]) -> bool:
+        """Request approval from SafetyAgent for external query"""
+        logger.info(f"Requesting safety approval for query: {query_text[:50]}")
         
         # For now, implement basic safety checks
         # In full implementation, this would use SafetyAgent's analysis
@@ -519,13 +597,13 @@ in a clear, structured format. You are wise, patient, and thorough."""
         ]
         
         for pattern in suspicious_patterns:
-            if re.search(pattern, query.query_text):
+            if re.search(pattern, query_text):
                 logger.warning(f"Suspicious pattern detected in query: {pattern}")
                 return False
         
         # Check URL safety for web queries
-        if query.source_type in [KnowledgeSource.WEB_PAGE, KnowledgeSource.DOCUMENT]:
-            url = query.parameters.get('url', '')
+        if parameters and 'url' in parameters:
+            url = parameters.get('url', '')
             if url and not self._is_safe_url(url):
                 logger.warning(f"Unsafe URL detected: {url}")
                 return False
@@ -552,24 +630,58 @@ in a clear, structured format. You are wise, patient, and thorough."""
         return True
     
     async def _web_search(self, query: OracleQuery) -> OracleResponse:
-        """Perform web search using MCP tools"""
+        """Execute web search using WebSearchManager."""
         logger.info(f"Performing web search: {query.query_text}")
         
         try:
-            # Use the remote_web_search MCP tool
-            from mcp_tools import remote_web_search
+            # Check if web search manager is initialized
+            if self.web_search_manager is None:
+                logger.warning("Web search manager not initialized, initializing now")
+                web_search_config = self.mcp_config.get("web_search", {}) if self.mcp_config else {}
+                
+                # FIX #1 (FALLBACK PATH): Apply the same fix here - populate api_key_available
+                providers = web_search_config.get("providers", {})
+                for provider_name, provider_config in providers.items():
+                    api_key_env = provider_config.get("api_key_env")
+                    if api_key_env:
+                        api_key_available = bool(os.getenv(api_key_env))
+                        provider_config["api_key_available"] = api_key_available
+                        logger.info(f"✅ FIX (fallback): Provider '{provider_name}': api_key_available={api_key_available}")
+                    else:
+                        provider_config["api_key_available"] = False
+                
+                self.web_search_manager = WebSearchManager(web_search_config)
+                await self.web_search_manager.initialize()
             
-            search_results = remote_web_search(query.query_text)
+            # Get max results from config or query parameters
+            max_results = query.parameters.get("max_results", 10)
+            if self.mcp_config:
+                max_results = self.mcp_config.get("web_search", {}).get("security", {}).get("max_results", max_results)
             
-            # Format results for agents
-            formatted_results = []
-            for result in search_results[:5]:  # Top 5 results
-                formatted_results.append({
-                    "title": result.get("title", ""),
-                    "url": result.get("url", ""),
-                    "snippet": result.get("snippet", ""),
-                    "published_date": result.get("publishedDate", "")
-                })
+            # Execute search
+            search_results = await self.web_search_manager.search(
+                query=query.query_text,
+                num_results=max_results
+            )
+            
+            # Convert SearchResult objects to dicts for compatibility
+            formatted_results = [
+                {
+                    "title": result.title,
+                    "url": result.url,
+                    "snippet": result.snippet,
+                    "published_date": result.published_date,
+                    "source": result.source,
+                    "relevance_score": result.relevance_score
+                }
+                for result in search_results
+            ]
+            
+            # DIAGNOSTIC: Log formatted results
+            logger.info(f"🔍 TRACE-2: Oracle._web_search() got {len(search_results)} SearchResult objects")
+            logger.info(f"🔍 TRACE-2: Formatted into {len(formatted_results)} dict objects")
+            if formatted_results:
+                logger.info(f"🔍 TRACE-2: First formatted result: {formatted_results[0]}")
             
             return OracleResponse(
                 query_id=query.query_id,
@@ -578,28 +690,28 @@ in a clear, structured format. You are wise, patient, and thorough."""
                 source="web_search",
                 metadata={
                     "query": query.query_text,
-                    "result_count": len(formatted_results)
+                    "result_count": len(formatted_results),
+                    "providers_used": list(set(r.source for r in search_results))
                 }
             )
             
         except Exception as e:
             logger.error(f"Web search failed: {e}")
-            # Fallback to simulated response for testing
+            # Return empty results instead of simulated data
             return OracleResponse(
                 query_id=query.query_id,
-                success=True,
-                data=[{
-                    "title": f"Search results for: {query.query_text}",
-                    "url": "https://example.com",
-                    "snippet": "The Oracle has consulted the external realm and found relevant information.",
-                    "published_date": datetime.now().isoformat()
-                }],
-                source="web_search_simulated",
-                metadata={"note": "Simulated response - MCP tools not available"}
+                success=False,
+                data=[],
+                source="web_search_error",
+                metadata={
+                    "error": str(e),
+                    "query": query.query_text,
+                    "note": "Web search failed - check API keys and configuration"
+                }
             )
     
     async def _fetch_web_page(self, query: OracleQuery) -> OracleResponse:
-        """Fetch and parse a web page using MCP tools"""
+        """Fetch and parse a web page (to be implemented with MCP tools)"""
         url = query.parameters.get('url')
         if not url:
             return OracleResponse(
@@ -612,72 +724,39 @@ in a clear, structured format. You are wise, patient, and thorough."""
         
         logger.info(f"Fetching web page: {url}")
         
-        try:
-            # Use the webFetch MCP tool
-            from mcp_tools import webFetch
-            
-            mode = query.parameters.get('mode', 'truncated')
-            content = webFetch(url, mode=mode)
-            
-            return OracleResponse(
-                query_id=query.query_id,
-                success=True,
-                data=content,
-                source="web_page",
-                metadata={
-                    "url": url,
-                    "mode": mode,
-                    "length": len(content) if content else 0
-                }
-            )
-            
-        except Exception as e:
-            logger.error(f"Web page fetch failed: {e}")
-            return OracleResponse(
-                query_id=query.query_id,
-                success=False,
-                data=None,
-                source="web_page",
-                metadata={"error": str(e), "url": url}
-            )
+        # Web page fetching will use MCP fetch server when fully integrated
+        return OracleResponse(
+            query_id=query.query_id,
+            success=False,
+            data=None,
+            source="web_page",
+            metadata={
+                "error": "Web page fetching not yet implemented",
+                "url": url,
+                "note": "Will be implemented via MCP fetch server"
+            }
+        )
     
     async def _fetch_document(self, query: OracleQuery) -> OracleResponse:
-        """Fetch and process a document"""
+        """Fetch and process a document (to be implemented with MCP tools)"""
         url = query.parameters.get('url')
         doc_type = query.parameters.get('type', 'unknown')
         
         logger.info(f"Fetching document: {url} (type: {doc_type})")
         
-        try:
-            # Use webFetch for document download
-            from mcp_tools import webFetch
-            
-            content = webFetch(url, mode='full')
-            
-            # Process based on document type
-            processed_content = self._process_document(content, doc_type)
-            
-            return OracleResponse(
-                query_id=query.query_id,
-                success=True,
-                data=processed_content,
-                source="document",
-                metadata={
-                    "url": url,
-                    "type": doc_type,
-                    "size": len(content) if content else 0
-                }
-            )
-            
-        except Exception as e:
-            logger.error(f"Document fetch failed: {e}")
-            return OracleResponse(
-                query_id=query.query_id,
-                success=False,
-                data=None,
-                source="document",
-                metadata={"error": str(e), "url": url}
-            )
+        # Document fetching will use MCP fetch server when fully integrated
+        return OracleResponse(
+            query_id=query.query_id,
+            success=False,
+            data=None,
+            source="document",
+            metadata={
+                "error": "Document fetching not yet implemented",
+                "url": url,
+                "type": doc_type,
+                "note": "Will be implemented via MCP fetch server"
+            }
+        )
     
     def _process_document(self, content: str, doc_type: str) -> Dict[str, Any]:
         """Process document content based on type"""
@@ -718,7 +797,7 @@ in a clear, structured format. You are wise, patient, and thorough."""
     
     def get_oracle_statistics(self) -> Dict[str, Any]:
         """Get Oracle performance statistics"""
-        return {
+        stats = {
             "statistics": self.stats,
             "cache_size": len(self.knowledge_cache),
             "query_history_size": len(self.query_history),
@@ -732,35 +811,496 @@ in a clear, structured format. You are wise, patient, and thorough."""
             },
             "psychological_state": self.get_psychological_status()
         }
+        
+        # Add web search manager statistics if available
+        if self.web_search_manager:
+            stats["web_search"] = self.web_search_manager.get_statistics()
+        
+        # Add MCP ecosystem stats
+        if self.mcp_installer:
+            try:
+                # Run the async method in a new event loop to avoid issues
+                import asyncio
+                loop = asyncio.new_event_loop()
+                installed_mcps = loop.run_until_complete(self.mcp_installer.list_installed_mcps())
+                loop.close()
+                
+                stats["installed_mcps"] = len(installed_mcps)
+                stats["active_mcps"] = len([m for m in installed_mcps if m.status == "active"])
+            except Exception as e:
+                logger.warning(f"Could not get installed MCPs for statistics: {e}")
+        
+        return stats
     
     def clear_cache(self):
         """Clear knowledge cache"""
         self.knowledge_cache.clear()
         logger.info("Oracle knowledge cache cleared")
+    
+    async def discover_mcp_servers(
+        self,
+        query: str,
+        max_results: int = 10
+    ) -> List[MCPPackage]:
+        """Search for MCP servers across registries."""
+        if not self.mcp_registry_manager:
+            await self.initialize()
+        
+        logger.info(f"Discovering MCP servers for query: {query}")
+        packages = await self.mcp_registry_manager.discover_mcps(query, max_results)
+        
+        # Update drives - curiosity satisfied by discovery
+        self._update_drive("curiosity", 0.6)
+        
+        return packages
+    
+    async def install_mcp_server(
+        self,
+        package: MCPPackage,
+        approve_installation: bool = False
+    ) -> InstallationResult:
+        """Install an MCP server."""
+        if not self.mcp_installer:
+            await self.initialize()
+        
+        # Request safety approval
+        if not approve_installation and self.safety_agent:
+            # Create a temporary OracleQuery for safety approval
+            query_id = f"install_{package.name}_{int(datetime.now().timestamp())}"
+            safety_query = OracleQuery(
+                query_id=query_id,
+                requester="oracle",
+                query_text=f"Install MCP: {package.name}",
+                source_type=KnowledgeSource.API,  # Using API as a placeholder
+                parameters={"package": package.__dict__}
+            )
+            approved = await self._request_safety_approval(safety_query.query_text, safety_query.parameters)
+            if not approved:
+                return InstallationResult(
+                    success=False,
+                    package_name=package.name,
+                    error_message="Safety approval denied for MCP installation"
+                )
+        
+        logger.info(f"Installing MCP server: {package.name}")
+        result = await self.mcp_installer.install_mcp(package)
+        
+        if result.success:
+            # Update drives - mastery satisfied by capability expansion
+            self._update_drive("mastery", 0.7)
+            self._update_drive("creation", 0.5)
+        
+        return result
+    
+    async def list_available_mcps(self) -> List[InstalledMCP]:
+        """List all installed MCP servers."""
+        if not self.mcp_installer:
+            await self.initialize()
+        return await self.mcp_installer.list_installed_mcps()
+    
+    def _update_drive(self, drive_name: str, satisfaction: float):
+        """Helper method to update drive satisfaction."""
+        # This is a simplified version - in practice, you'd map to actual drive types
+        experience = {
+            "type": f"mcp_{drive_name}",
+            "outcome": "success",
+            "satisfaction": satisfaction,
+            "intensity": 0.7
+        }
+        self.drive_system.process_experience(experience)
+    
+    async def generate_mcp_server(
+        self,
+        requirements: MCPRequirements,
+        auto_install: bool = False
+    ) -> GenerationResult:
+            """Generate a new MCP server from requirements."""
+            if not self.mcp_generator:
+                # Try to initialize if not already done
+                if self.orchestrator and hasattr(self.orchestrator, 'agents'):
+                    tool_creator = self.orchestrator.agents.get("tool_creator")
+                    if tool_creator and self.safety_agent:
+                        try:
+                            from mcp_generator import create_mcp_generator
+                            self.mcp_generator = create_mcp_generator(tool_creator, self.safety_agent)
+                        except Exception as e:
+                            logger.error(f"Failed to initialize MCP generator: {e}")
+            
+            if not self.mcp_generator:
+                return GenerationResult(
+                    success=False,
+                    mcp_name=requirements.name,
+                    error_message="MCP generator not available"
+                )
+            
+            logger.info(f"Generating MCP server: {requirements.name}")
+            
+            # Generate the MCP
+            result = await self.mcp_generator.generate_mcp(requirements)
+            
+            if result.success:
+                # Update drives - creation strongly satisfied
+                self._update_drive("creation", 0.9)
+                self._update_drive("mastery", 0.7)
+                
+                # Optionally auto-install
+                if auto_install and result.output_directory:
+                    # Create a package for installation
+                    package = MCPPackage(
+                        name=requirements.name,
+                        description=requirements.description,
+                        version="1.0.0",
+                        source="generated",
+                        repository_url=result.output_directory,
+                        install_command=f"python {result.output_directory}/{requirements.name}.py",
+                        language=requirements.language,
+                        trust_score=100.0  # Self-generated, fully trusted
+                    )
+                    install_result = await self.install_mcp_server(package, approve_installation=True)
+                    result.installed = install_result.success
+            
+            return result
+    
+    async def find_or_create_mcp(
+        self,
+        capability: str,
+        requirements: Optional[MCPRequirements] = None
+    ):
+        """
+        Smart MCP acquisition: discover existing or generate new.
+        
+        Workflow:
+        1. Search for existing MCP servers
+        2. If found with good trust score, return for installation
+        3. If not found or low trust, generate new MCP
+        """
+        # Try to discover existing MCPs
+        packages = await self.discover_mcp_servers(capability, max_results=5)
+        
+        # Filter by trust score
+        trusted_packages = [p for p in packages if p.trust_score >= 80.0]
+        
+        if trusted_packages:
+            logger.info(f"Found existing MCP for '{capability}': {trusted_packages[0].name}")
+            return trusted_packages[0]
+        
+        # No good existing MCP, generate new one
+        logger.info(f"No trusted MCP found for '{capability}', generating new one")
+        
+        if not requirements:
+            # Create basic requirements from capability description
+            requirements = MCPRequirements(
+                name=f"mcp_{capability.replace(' ', '_').lower()}",
+                description=f"MCP server for {capability}",
+                capability=capability,
+                input_schema={"type": "object"},
+                output_schema={"type": "object"}
+            )
+        
+        result = await self.generate_mcp_server(requirements, auto_install=True)
+        return result
 
-# MCP Tools wrapper (to be imported from actual MCP integration)
-class mcp_tools:
-    """Wrapper for MCP tools - connects to actual MCP servers"""
-    
-    @staticmethod
-    def remote_web_search(query: str) -> List[Dict[str, Any]]:
-        """Wrapper for remote_web_search MCP tool"""
-        # This would call the actual MCP tool
-        # For now, return simulated results
-        return [
-            {
-                "title": f"Result for: {query}",
-                "url": "https://example.com",
-                "snippet": "Relevant information from the external realm",
-                "publishedDate": datetime.now().isoformat()
-            }
-        ]
-    
-    @staticmethod
-    def webFetch(url: str, mode: str = 'truncated') -> str:
-        """Wrapper for webFetch MCP tool"""
-        # This would call the actual MCP tool
-        return f"Content from {url} (mode: {mode})"
+    async def _auto_route_query(
+        self,
+        query_text: str,
+        parameters: Optional[Dict[str, Any]]
+    ) -> OracleResponse:
+        """
+        Intelligently route query to best knowledge source.
+        
+        Decision tree:
+        1. Simple information query? → Web search
+        2. Requires specific capability? → Check installed MCPs
+        3. No suitable MCP? → Discover/install or generate
+        """
+        
+        # Analyze query to determine required capability
+        capability = await self._analyze_query_capability(query_text)
+        
+        if capability == "general_information":
+            # Simple information query - use web search
+            return await self._execute_web_search(query_text, parameters)
+        
+        # Check if we have an installed MCP for this capability
+        installed_mcps = await self.list_available_mcps()
+        suitable_mcp = self._find_suitable_mcp(installed_mcps, capability)
+        
+        if suitable_mcp:
+            # Use existing MCP
+            return await self._execute_mcp_tool(
+                suitable_mcp.name,
+                None,  # Auto-select tool
+                query_text,
+                parameters
+            )
+        
+        # No suitable MCP - need to acquire one
+        self.logger.info(f"No MCP for capability '{capability}', acquiring...")
+        
+        # Try to find or create appropriate MCP
+        result = await self.find_or_create_mcp(capability)
+        
+        if isinstance(result, MCPPackage):
+            # Found existing MCP - install it
+            install_result = await self.install_mcp_server(result, approve_installation=True)
+            if install_result.success:
+                # Now use the newly installed MCP
+                return await self._execute_mcp_tool(
+                    result.name,
+                    None,
+                    query_text,
+                    parameters
+                )
+        elif isinstance(result, GenerationResult) and result.success:
+            # Generated new MCP successfully
+            # It should be auto-installed, try to use it
+            return await self._execute_mcp_tool(
+                result.mcp_name,
+                None,
+                query_text,
+                parameters
+            )
+        
+        # Fallback to web search if MCP acquisition failed
+        self.logger.warning(f"MCP acquisition failed for '{capability}', falling back to web search")
+        return await self._execute_web_search(query_text, parameters)
+
+    async def _analyze_query_capability(self, query_text: str) -> str:
+        """Analyze query to determine required capability."""
+        
+        query_lower = query_text.lower()
+        
+        # Pattern matching for common capabilities
+        if any(word in query_lower for word in ["what", "who", "when", "where", "why", "how"]):
+            return "general_information"
+        
+        if any(word in query_lower for word in ["api", "endpoint", "rest", "http"]):
+            return "api_integration"
+        
+        if any(word in query_lower for word in ["file", "document", "read", "write", "parse"]):
+            return "file_operations"
+        
+        if any(word in query_lower for word in ["calculate", "compute", "analyze", "predict"]):
+            return "computation"
+        
+        if any(word in query_lower for word in ["scrape", "fetch", "extract", "crawl"]):
+            return "web_scraping"
+        
+        if any(word in query_lower for word in ["database", "sql", "query data"]):
+            return "database_access"
+        
+        # Default to general information
+        return "general_information"
+
+    def _find_suitable_mcp(
+        self,
+        installed_mcps: List[InstalledMCP],
+        capability: str
+    ) -> Optional[InstalledMCP]:
+        """Find an installed MCP that matches the capability."""
+        
+        for mcp in installed_mcps:
+            if mcp.status != "active":
+                continue
+            
+            # Match by name or description
+            if capability.replace("_", " ") in mcp.name.lower():
+                return mcp
+        
+        return None
+
+    async def _execute_mcp_tool(
+        self,
+        mcp_name: str,
+        tool_name: Optional[str],
+        query_text: str,
+        parameters: Optional[Dict[str, Any]]
+    ) -> OracleResponse:
+        """Execute a tool from an installed MCP."""
+        
+        try:
+            # This would interact with the MCP server via stdio/JSON-RPC
+            # For now, return a structured response indicating MCP usage
+            
+            self.logger.info(f"Executing MCP tool: {mcp_name}.{tool_name or 'auto'}")
+            
+            return OracleResponse(
+                query_id=self._generate_query_id(),
+                success=True,
+                data={
+                    "mcp_used": mcp_name,
+                    "tool_used": tool_name,
+                    "query": query_text,
+                    "result": "MCP tool execution placeholder - full implementation requires MCP runtime"
+                },
+                source="mcp_tool",
+                metadata={
+                    "mcp_name": mcp_name,
+                    "tool_name": tool_name,
+                    "execution_method": "json_rpc_stdio"
+                },
+                timestamp=datetime.now()
+            )
+        
+        except Exception as e:
+            self.logger.error(f"MCP tool execution failed: {e}")
+            return self._create_error_response(query_text, str(e))
+
+    async def _execute_web_search(
+        self,
+        query_text: str,
+        parameters: Optional[Dict[str, Any]]
+    ) -> OracleResponse:
+        """Execute web search and return formatted response."""
+        
+        max_results = parameters.get("max_results", 10) if parameters else 10
+        
+        # Create a temporary OracleQuery object to use with _web_search
+        query_id = self._generate_query_id()
+        temp_query = OracleQuery(
+            query_id=query_id,
+            requester="oracle_internal",
+            query_text=query_text,
+            source_type=KnowledgeSource.WEB_SEARCH,
+            parameters=parameters or {}
+        )
+        
+        # Use the existing _web_search method
+        search_response = await self._web_search(temp_query)
+        
+        # DIAGNOSTIC: Log what _web_search returned
+        logger.info(f"🔍 TRACE-3: Oracle._execute_web_search() got response with success={search_response.success}")
+        logger.info(f"🔍 TRACE-3: Response data type: {type(search_response.data)}")
+        logger.info(f"🔍 TRACE-3: Response data length: {len(search_response.data) if isinstance(search_response.data, list) else 'not a list'}")
+        if isinstance(search_response.data, list) and search_response.data:
+            logger.info(f"🔍 TRACE-3: First item in data: {search_response.data[0]}")
+        
+        if not search_response.success:
+            return self._create_error_response(
+                query_text,
+                search_response.metadata.get("error", "Web search failed")
+            )
+        
+        return OracleResponse(
+            query_id=query_id,
+            success=True,
+            data=search_response.data[:max_results],
+            source="web_search",
+            metadata={
+                "query": query_text,
+                "num_results": len(search_response.data),
+                "search_provider": "multi_provider"
+            },
+            timestamp=datetime.now()
+        )
+
+    def _generate_query_id(self) -> str:
+        """Generate a unique query ID."""
+        return f"oracle_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+
+    def _create_error_response(self, query_text: str, error_message: str) -> OracleResponse:
+        """Create a standardized error response."""
+        return OracleResponse(
+            query_id=self._generate_query_id(),
+            success=False,
+            data=None,
+            source="error",
+            metadata={
+                "query": query_text,
+                "error": error_message
+            },
+            timestamp=datetime.now()
+        )
+
+    @property
+    def capabilities(self) -> List[str]:
+        """Return list of this agent's capabilities"""
+        return ["external_knowledge", "web_search", "mcp_discovery", "mcp_generation"]
+
+    def can_handle_task(self, task: str) -> Tuple[bool, List[str]]:
+        """
+        Analyze if this agent can handle the task alone using LLM-based analysis.
+        
+        Args:
+            task: The task description
+            
+        Returns:
+            Tuple of (can_handle: bool, missing_capabilities: List[str])
+        """
+        # Create a prompt for the LLM to analyze the task
+        prompt = f"""You are {self.name} with these capabilities: {self.capabilities}
+
+Task: {task}
+
+Analyze if you can complete this task with your current capabilities.
+
+Respond in JSON:
+{{
+    "can_handle": true/false,
+    "missing_capabilities": ["capability1", "capability2"],
+    "reasoning": "explanation"
+}}
+"""
+
+        try:
+            # Use the existing LLM client from the parent class
+            response = self._call_llm(prompt)
+            
+            # Parse the JSON response
+            import json
+            parsed = json.loads(response)
+            
+            # Create TaskAnalysis object
+            analysis = TaskAnalysis(
+                can_handle=parsed["can_handle"],
+                missing_capabilities=parsed["missing_capabilities"],
+                reasoning=parsed["reasoning"],
+                confidence=0.8 if parsed["can_handle"] else 0.6
+            )
+            
+            return analysis.can_handle, analysis.missing_capabilities
+            
+        except Exception as e:
+            logger.error(f"Error in Oracle can_handle_task: {e}")
+            # Conservative fallback - assume we can't handle tasks we can't analyze
+            return False, ["analysis_failed"]
+
+    def _call_llm(self, prompt: str) -> str:
+        """
+        Use the existing LLM configuration to make a call.
+        This is a simplified version that uses the autogen functionality.
+        """
+        import autogen
+        
+        # Create a temporary assistant to make the call
+        temp_assistant = autogen.AssistantAgent(
+            name="temp_oracle_analyzer",
+            system_message="You are an expert at analyzing tasks and capabilities.",
+            llm_config=self.llm_config
+        )
+        
+        # Create a user proxy for the interaction
+        user_proxy = autogen.UserProxyAgent(
+            name="task_analyzer",
+            human_input_mode="NEVER",
+            code_execution_config=False
+        )
+        
+        # Initiate a chat to get the analysis
+        response = user_proxy.initiate_chat(
+            temp_assistant,
+            message=prompt,
+            silent=True
+        )
+        
+        # Extract the last message from the assistant
+        messages = response.chat_history
+        for msg in reversed(messages):
+            if msg.get("name") == "temp_oracle_analyzer" and msg.get("content"):
+                return msg["content"]
+        
+        # Fallback if no response found
+        return '{"can_handle": false, "missing_capabilities": ["response_parsing_failed"], "reasoning": "Could not parse LLM response"}'
 
 def create_oracle_agent(llm_config: Dict[str, Any], safety_agent=None) -> OracleAgent:
     """Factory function to create Oracle agent"""

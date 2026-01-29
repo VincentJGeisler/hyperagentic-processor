@@ -10,16 +10,30 @@ based on current drive states, creating authentic motivation-driven responses.
 
 import json
 import logging
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional, Callable, Tuple
 from datetime import datetime
+from dataclasses import dataclass
 import autogen
 from autogen import AssistantAgent, UserProxyAgent, GroupChat, GroupChatManager
 
 from agent_drive_system import AgentDriveSystem, DriveType, EmotionalState
 from evolutionary_pressure import get_pressure_status
 from universe_physics import get_physics_status
+from agent_communication import AgentMessage, log_message
+
+from agent_drive_system import AgentDriveSystem, DriveType, EmotionalState
+from evolutionary_pressure import get_pressure_status
+from universe_physics import get_physics_status
 
 logger = logging.getLogger("MotivatedAgent")
+
+
+@dataclass
+class TaskAnalysis:
+    can_handle: bool
+    missing_capabilities: List[str]
+    reasoning: str
+    confidence: float  # 0.0 to 1.0
 
 class MotivatedAgent(AssistantAgent):
     """
@@ -67,6 +81,84 @@ class MotivatedAgent(AssistantAgent):
         }
         
         logger.info(f"Motivated agent {name} initialized with role: {agent_role}")
+    
+    @property
+    def capabilities(self) -> List[str]:
+        """Return list of this agent's capabilities"""
+        return []  # To be overridden by subclasses
+    
+    def can_handle_task(self, task: str) -> Tuple[bool, List[str]]:
+        """
+        Analyze if this agent can handle the task alone.
+        
+        Args:
+            task: The task description
+            
+        Returns:
+            Tuple of (can_handle: bool, missing_capabilities: List[str])
+            - can_handle: True if agent can complete task alone
+            - missing_capabilities: List of capabilities this agent lacks
+        """
+        # Create a prompt for the LLM to analyze the task
+        prompt = f"""You are {self.name} with these capabilities: {self.capabilities}
+
+Task: {task}
+
+Analyze:
+1. Can you complete this task with your current capabilities?
+2. What capabilities are you missing (if any)?
+
+Respond in JSON:
+{{
+    "can_handle": true/false,
+    "missing_capabilities": ["capability1", "capability2"],
+    "reasoning": "explanation",
+    "confidence": 0.0-1.0
+}}
+"""
+        
+        # For the base class, we'll return a default response
+        # Subclasses should override this method to make actual LLM calls
+        response = {
+            "can_handle": False,
+            "missing_capabilities": ["unknown"],
+            "reasoning": "Base agent - override in subclasses for LLM analysis",
+            "confidence": 0.5
+        }
+        
+        # Create TaskAnalysis object
+        analysis = TaskAnalysis(
+            can_handle=response["can_handle"],
+            missing_capabilities=response["missing_capabilities"],
+            reasoning=response["reasoning"],
+            confidence=response["confidence"]
+        )
+        
+        return analysis.can_handle, analysis.missing_capabilities
+    
+    def identify_helper_agents(self, missing_capabilities: List[str], registry) -> List[str]:
+        """
+        Find agents that can provide missing capabilities.
+        
+        Args:
+            missing_capabilities: List of capabilities this agent needs
+            registry: AgentRegistry instance to query
+            
+        Returns:
+            List of agent names that can help
+        """
+        helper_agents = []
+        
+        for capability in missing_capabilities:
+            # Find agents that have this capability
+            agents_with_capability = registry.get_agents_by_capability(capability)
+            
+            # Add to helper agents list (avoid duplicates)
+            for agent_name in agents_with_capability:
+                if agent_name != self.name and agent_name not in helper_agents:
+                    helper_agents.append(agent_name)
+        
+        return helper_agents
     
     def _generate_dynamic_system_message(self) -> str:
         """
@@ -362,6 +454,142 @@ class MotivatedAgent(AssistantAgent):
         }
         
         return self.drive_system.process_experience(experience)
+    
+    def request_help(self, task: str, missing_capabilities: List[str], registry) -> AgentMessage:
+        """
+        Request help from other agents.
+        
+        Args:
+            task: The task that needs help
+            missing_capabilities: Capabilities this agent lacks
+            registry: AgentRegistry to find helper agents
+            
+        Returns:
+            AgentMessage formatted as a help request
+        """
+        # Identify helper agents based on missing capabilities
+        helper_agents = self.identify_helper_agents(missing_capabilities, registry)
+        
+        # If no specific helpers found, broadcast to all agents
+        target_agent = "broadcast" if not helper_agents else helper_agents[0]
+        
+        # Create help request message
+        message = AgentMessage(
+            type="request_help",
+            from_agent=self.name,
+            to_agent=target_agent,
+            content=task,
+            context={
+                "missing_capabilities": missing_capabilities,
+                "helper_agents": helper_agents,
+                "task_id": str(hash(task))  # Simple task ID generation
+            }
+        )
+        
+        # Log the message
+        log_message(message)
+        
+        return message
+    
+    def provide_help(self, request_message: AgentMessage) -> AgentMessage:
+        """
+        Respond to a help request from another agent.
+        
+        Args:
+            request_message: The incoming help request
+            
+        Returns:
+            AgentMessage with help response (or refusal if unable to help)
+        """
+        # Check if we can help with the requested capabilities
+        requested_capabilities = request_message.context.get("missing_capabilities", [])
+        can_help = any(cap in self.capabilities for cap in requested_capabilities)
+        
+        # Prepare response content
+        if can_help:
+            response_content = f"{self.name} can help with: {', '.join(requested_capabilities)}"
+        else:
+            response_content = f"{self.name} cannot help with the requested capabilities"
+        
+        # Create response message
+        response_message = AgentMessage(
+            type="provide_help",
+            from_agent=self.name,
+            to_agent=request_message.from_agent,
+            content=response_content,
+            context={
+                "can_help": can_help,
+                "requested_capabilities": requested_capabilities,
+                "original_task": request_message.content,
+                "original_message_id": request_message.message_id
+            }
+        )
+        
+        # Log the message
+        log_message(response_message)
+        
+        return response_message
+    
+    def delegate_task(self, task: str, to_agent: str, context: Dict[str, Any]) -> AgentMessage:
+        """
+        Delegate a task to another agent.
+        
+        Args:
+            task: Task description to delegate
+            to_agent: Name of agent to delegate to
+            context: Additional context for the delegation
+            
+        Returns:
+            AgentMessage formatted as a delegation
+        """
+        # Create delegation message
+        message = AgentMessage(
+            type="delegation",
+            from_agent=self.name,
+            to_agent=to_agent,
+            content=task,
+            context=context
+        )
+        
+        # Log the message
+        log_message(message)
+        
+        return message
+    
+    def handle_message(self, message: AgentMessage) -> Optional[AgentMessage]:
+        """
+        Handle incoming messages and route to appropriate handlers.
+        
+        Args:
+            message: Incoming AgentMessage
+            
+        Returns:
+            Response AgentMessage or None if no response needed
+        """
+        logger.info(f"Agent {self.name} handling message of type: {message.type}")
+        
+        # Route message based on type
+        if message.type == "request_help":
+            return self.provide_help(message)
+        elif message.type == "provide_help":
+            # Process help response - could store or act on it
+            logger.info(f"Received help from {message.from_agent}: {message.content}")
+            return None
+        elif message.type == "delegation":
+            # Process delegated task
+            logger.info(f"Received delegated task from {message.from_agent}: {message.content}")
+            return None
+        elif message.type == "query":
+            # Process query
+            logger.info(f"Received query from {message.from_agent}: {message.content}")
+            return None
+        elif message.type == "response":
+            # Process response
+            logger.info(f"Received response from {message.from_agent}: {message.content}")
+            return None
+        else:
+            logger.warning(f"Unknown message type received: {message.type}")
+            return None
     
     def get_psychological_status(self) -> Dict[str, Any]:
         """Get comprehensive psychological status for monitoring"""
