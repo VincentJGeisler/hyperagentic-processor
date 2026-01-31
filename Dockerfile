@@ -39,6 +39,10 @@ COPY config/ /universe/config/
 COPY .kiro/ /universe/.kiro/
 COPY .env /universe/src/
 
+# Create mcp_servers directory with proper permissions
+RUN mkdir -p /universe/.kiro/mcp_servers && \
+    chown -R agent_collective:agent_collective /universe/.kiro
+
 # Set resource limits that appear as natural laws
 # Memory limit (Conservation of Memory Law)
 RUN echo "import resource; resource.setrlimit(resource.RLIMIT_AS, (536870912, 536870912))" > /universe/physics_laws.py

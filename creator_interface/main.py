@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 import httpx
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -28,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger("CreatorInterface")
 
 # Configuration
-UNIVERSE_API_URL = "http://agent_universe:8000"
+UNIVERSE_API_URL = os.getenv("UNIVERSE_API_URL", "http://localhost:8000")
 DIVINE_LOGS_DIR = Path("/divine/logs")
 DIVINE_HISTORY_DIR = Path("/divine/history")
 
@@ -110,7 +111,7 @@ async def get_universe_status():
     """Get current status of the agent universe"""
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{UNIVERSE_API_URL}/universe/status", timeout=10.0)
+            response = await client.get(f"{UNIVERSE_API_URL}/universe/status", timeout=30.0)
             response.raise_for_status()
             return response.json()
     except Exception as e:
@@ -122,7 +123,7 @@ async def get_agents_status():
     """Get psychological status of all agents"""
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{UNIVERSE_API_URL}/agents/status", timeout=10.0)
+            response = await client.get(f"{UNIVERSE_API_URL}/agents/status", timeout=30.0)
             response.raise_for_status()
             return response.json()
     except Exception as e:
@@ -257,7 +258,7 @@ async def get_agent_psychology(agent_name: str):
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{UNIVERSE_API_URL}/agents/{agent_name}/psychology",
-                timeout=10.0
+                timeout=30.0
             )
             response.raise_for_status()
             return response.json()
@@ -275,7 +276,7 @@ async def startup_event():
     # Try to connect to universe
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{UNIVERSE_API_URL}/", timeout=5.0)
+            response = await client.get(f"{UNIVERSE_API_URL}/", timeout=30.0)
             logger.info(f"Successfully connected to agent universe: {response.status_code}")
     except Exception as e:
         logger.warning(f"Could not connect to agent universe on startup: {e}")

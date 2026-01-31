@@ -701,7 +701,11 @@ if __name__ == "__main__":
 
     def can_handle_task(self, task: str) -> Tuple[bool, List[str]]:
         """
-        Analyze if this agent can handle the task alone using LLM-based analysis.
+        Analyze if this agent can handle the task using lightweight LLM call.
+        
+        FIX ISSUE #2: Uses direct OpenAI API instead of creating full AutoGen agents
+        with 300+ line psychological system messages. Maintains intelligence while
+        reducing tokens by 90%+.
         
         Args:
             task: The task description
@@ -709,80 +713,48 @@ if __name__ == "__main__":
         Returns:
             Tuple of (can_handle: bool, missing_capabilities: List[str])
         """
-        # Create a prompt for the LLM to analyze the task
-        prompt = f"""You are {self.name} with these capabilities: {self.capabilities}
+        try:
+            import os
+            from openai import OpenAI
+            
+            api_key = os.getenv("GROQ_API_KEY")
+            if not api_key:
+                # Fallback to simple keyword matching
+                toolcreator_keywords = ["create", "build", "generate", "write", "code", "implement", "tool", "function"]
+                can_handle = any(kw in task.lower() for kw in toolcreator_keywords)
+                return (True, []) if can_handle else (False, ["external_knowledge"])
+            
+            client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+            
+            # Minimal task analysis prompt (not 300+ line psychological message!)
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{
+                    "role": "user",
+                    "content": f"""You are ToolCreator with capabilities: {self.capabilities}
 
 Task: {task}
 
-Analyze if you can complete this task with your current capabilities.
-
-Respond in JSON:
-{{
-    "can_handle": true/false,
-    "missing_capabilities": ["capability1", "capability2"],
-    "reasoning": "explanation"
-}}
-"""
-
-        try:
-            # Use the existing LLM client from the parent class
-            response = self._call_llm(prompt)
-            
-            # Parse the JSON response
-            import json
-            parsed = json.loads(response)
-            
-            # Create TaskAnalysis object
-            analysis = TaskAnalysis(
-                can_handle=parsed["can_handle"],
-                missing_capabilities=parsed["missing_capabilities"],
-                reasoning=parsed["reasoning"],
-                confidence=0.8 if parsed["can_handle"] else 0.6
+Can you handle this alone? Respond ONLY with JSON:
+{{"can_handle": true/false, "missing": ["capability1"]}}"""
+                }],
+                temperature=0.3,
+                max_tokens=100
             )
             
-            return analysis.can_handle, analysis.missing_capabilities
+            import json
+            result = json.loads(response.choices[0].message.content.strip())
+            can_handle = result.get("can_handle", False)
+            missing = result.get("missing", ["external_knowledge"] if not can_handle else [])
+            
+            logger.info(f"✅ TOKEN-FIX: ToolCreator task analysis via lightweight LLM (~150 tokens)")
+            return can_handle, missing
             
         except Exception as e:
-            logger.error(f"Error in ToolCreator can_handle_task: {e}")
-            # Conservative fallback - assume we can't handle tasks we can't analyze
-            return False, ["analysis_failed"]
-
-    def _call_llm(self, prompt: str) -> str:
-        """
-        Use the existing LLM configuration to make a call.
-        This is a simplified version that uses the autogen functionality.
-        """
-        import autogen
-        
-        # Create a temporary assistant to make the call
-        temp_assistant = autogen.AssistantAgent(
-            name="temp_tool_creator_analyzer",
-            system_message="You are an expert at analyzing tasks and capabilities for tool creation.",
-            llm_config=self.llm_config
-        )
-        
-        # Create a user proxy for the interaction
-        user_proxy = autogen.UserProxyAgent(
-            name="task_analyzer",
-            human_input_mode="NEVER",
-            code_execution_config=False
-        )
-        
-        # Initiate a chat to get the analysis
-        response = user_proxy.initiate_chat(
-            temp_assistant,
-            message=prompt,
-            silent=True
-        )
-        
-        # Extract the last message from the assistant
-        messages = response.chat_history
-        for msg in reversed(messages):
-            if msg.get("name") == "temp_tool_creator_analyzer" and msg.get("content"):
-                return msg["content"]
-        
-        # Fallback if no response found
-        return '{"can_handle": false, "missing_capabilities": ["response_parsing_failed"], "reasoning": "Could not parse LLM response"}'
+            logger.error(f"Lightweight task analysis failed: {e}, using keyword fallback")
+            toolcreator_keywords = ["create", "build", "generate", "write", "code", "implement", "tool", "function"]
+            can_handle = any(kw in task.lower() for kw in toolcreator_keywords)
+            return (True, []) if can_handle else (False, ["external_knowledge"])
 
 def create_tool_creator_agent(llm_config: Dict[str, Any]) -> ToolCreatorAgent:
     """Factory function to create a functional ToolCreator agent"""

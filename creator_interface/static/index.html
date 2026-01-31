@@ -233,6 +233,11 @@
             50% { opacity: 0.5; }
         }
 
+        .response-error {
+            border-left: 3px solid #ff4444;
+            padding-left: 10px;
+        }
+
         ::-webkit-scrollbar {
             width: 8px;
         }
@@ -271,6 +276,7 @@ Examples:
 - Explain the nature of consciousness and your purpose"></textarea>
                 <div class="controls">
                     <button id="sendButton" onclick="sendDivineMessage()">Send Divine Message</button>
+                    <button onclick="testErrorDisplay()">Test Error Display</button>
                     <div class="priority-slider">
                         <span>Priority:</span>
                         <input type="range" id="priority" min="1" max="10" value="5">
@@ -411,14 +417,16 @@ Examples:
                     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
                 
-                const data = await response.json();
-                addResponseToLog(data);
+                // Don't add response here - WebSocket will handle it
+                // This prevents duplicate entries
                 
                 // Clear message
                 document.getElementById('divineMessage').value = '';
                 
             } catch (error) {
                 console.error('Error sending divine message:', error);
+                // Display error in response log AND show alert (don't remove existing features)
+                addErrorResponseToLog(error.message);
                 alert(`Failed to send divine message: ${error.message}`);
             } finally {
                 button.disabled = false;
@@ -439,7 +447,48 @@ Examples:
             
             const timestamp = new Date(data.timestamp).toLocaleString();
             const message = data.divine_message || data.message || 'Unknown message';
-            const result = JSON.stringify(data.agent_responses || data, null, 2);
+            
+            // Extract the human-readable answer from the response
+            let result = 'Processing...';
+            if (data.agent_responses) {
+                // agent_responses might be a string (stringified JSON) or an object
+                let responses = data.agent_responses;
+                
+                // If it's a string, try to parse it
+                if (typeof responses === 'string') {
+                    try {
+                        responses = JSON.parse(responses);
+                    } catch {
+                        // If parsing fails, use the string as-is
+                        result = responses;
+                        responses = null;
+                    }
+                }
+                
+                // Now extract the answer field if responses is an object
+                if (responses && typeof responses === 'object') {
+                    if (responses.answer) {
+                        // Direct answer field
+                        result = responses.answer;
+                    } else if (responses.result && typeof responses.result === 'object') {
+                        // Result object - check if it has an answer inside
+                        if (responses.result.answer) {
+                            result = responses.result.answer;
+                        } else {
+                            // Result is collaboration metadata without an answer
+                            result = `Task completed by ${responses.result.primary_agent || 'agent'}. No specific answer was generated - this was a collaboration task that completed successfully.`;
+                        }
+                    } else {
+                        // Unknown structure, stringify it
+                        result = JSON.stringify(responses, null, 2);
+                    }
+                }
+            } else if (data.answer) {
+                result = data.answer;
+            } else {
+                // Fallback to full JSON if no answer field found
+                result = JSON.stringify(data, null, 2);
+            }
             
             entry.innerHTML = `
                 <div class="response-timestamp">${timestamp} - ${data.message_id}</div>
@@ -451,6 +500,28 @@ Examples:
             
             // Refresh status
             refreshStatus();
+        }
+
+        function addErrorResponseToLog(errorMessage) {
+            const log = document.getElementById('responseLog');
+            
+            // Clear "no messages" text
+            if (log.querySelector('.stat-label')) {
+                log.innerHTML = '';
+            }
+            
+            const entry = document.createElement('div');
+            entry.className = 'response-entry response-error';
+            
+            const timestamp = new Date().toLocaleString();
+            
+            entry.innerHTML = `
+                <div class="response-timestamp">${timestamp} - ERROR</div>
+                <div class="response-message">❌ Error: ${errorMessage}</div>
+                <div class="response-result">The system encountered an issue processing your divine message. Please check your connection and try again.</div>
+            `;
+            
+            log.insertBefore(entry, log.firstChild);
         }
 
         async function refreshStatus() {
@@ -513,6 +584,11 @@ Examples:
                 
                 container.appendChild(card);
             }
+        }
+
+        // Test function for error display
+        function testErrorDisplay() {
+            addErrorResponseToLog("This is a test error message for demonstration purposes.");
         }
 
         // Initialize

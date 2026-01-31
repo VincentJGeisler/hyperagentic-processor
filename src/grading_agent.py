@@ -16,7 +16,7 @@ from enum import Enum
 import re
 import json
 
-from motivated_agent import MotivatedAgent
+from motivated_agent import MotivatedAgent, TaskAnalysis
 from agent_drive_system import DriveType
 
 logger = logging.getLogger("GradingAgent")

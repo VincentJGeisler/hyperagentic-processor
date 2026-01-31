@@ -15,7 +15,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from enum import Enum
 
-from motivated_agent import MotivatedAgent
+from motivated_agent import MotivatedAgent, TaskAnalysis
 from agent_drive_system import DriveType
 
 logger = logging.getLogger("SafetyAgent")
